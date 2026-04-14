@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Linking,
   Platform,
@@ -31,13 +32,22 @@ import {
   initNotificationHandler,
   registerExpoPushWithApi,
   shouldSkipExpoNotificationsModule,
-} from "./src/notificationsClient";
+  subscribeMailNotifications,
+} from "./src/notificationService";
 
 WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = "nevermiss_session";
+/** Foreground poll for Important list + server-side Gmail sync cadence for the UI */
+const CAPTURE_POLL_MS = 30_000;
 
 type Tab = "feed" | "rules" | "settings";
+
+function ruleTypeLabel(t: api.Rule["type"]): string {
+  if (t === "sender_email") return "Sender";
+  if (t === "domain") return "Domain";
+  return "Gmail label";
+}
 
 function formatConnectError(code: string): string {
   const key = decodeURIComponent(code).replace(/\+/g, " ");
@@ -82,6 +92,7 @@ export default function App() {
   );
   const [newRuleValue, setNewRuleValue] = useState("");
   const [connectEmailHint, setConnectEmailHint] = useState("");
+  const [listRefreshing, setListRefreshing] = useState(false);
 
   const loadSession = useCallback(async () => {
     const t = await SecureStore.getItemAsync(TOKEN_KEY);
@@ -112,6 +123,47 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     refreshAll().catch(() => {});
+  }, [token, refreshAll]);
+
+  /** Push taps + foreground pushes refresh Important without manual pull */
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    void subscribeMailNotifications({
+      onRefresh: () => refreshAll(),
+      onOpen: () => setTab("feed"),
+    }).then((unsub: () => void) => {
+      if (cancelled) unsub();
+      else unsubscribe = unsub;
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [token, refreshAll]);
+
+  /** Resume from background: refresh UI and ask server to sync Gmail soon */
+  useEffect(() => {
+    if (!token) return;
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshAll();
+        void api.triggerSync(token).catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [token, refreshAll]);
+
+  /** Periodic refresh while app is active (Expo Go Android: no remote push; polling fills the gap) */
+  useEffect(() => {
+    if (!token) return;
+    const id = setInterval(() => {
+      if (AppState.currentState === "active") {
+        void refreshAll();
+      }
+    }, CAPTURE_POLL_MS);
+    return () => clearInterval(id);
   }, [token, refreshAll]);
 
   const registerPush = useCallback(async (session: string) => {
@@ -306,7 +358,8 @@ export default function App() {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#38bdf8" />
+        <ActivityIndicator size="large" color={colors.accent} />
+        <Text style={styles.loadingLabel}>Loading</Text>
         <StatusBar style="light" />
       </View>
     );
@@ -319,19 +372,14 @@ export default function App() {
         <View style={styles.hero}>
           <Text style={styles.title}>Never Miss</Text>
           <Text style={styles.sub}>
-            For people whose mail is in Gmail or Google Workspace: connect that
-            mailbox, then say what counts as important (a sender, a domain, or a
-            Gmail label). Those messages show up in the app and can notify you
-            when new mail matches.
+            Connect Gmail, define what matters, then see matches here with optional
+            alerts.
           </Text>
-          <Text style={styles.stepHint}>
-            1. Connect below → 2. Rules → 3. Important + notifications
-          </Text>
-          <Text style={styles.label}>Your address (optional)</Text>
+          <Text style={styles.label}>Email hint (optional)</Text>
           <TextInput
             style={styles.input}
-            placeholder="you@company.com — speeds up account pick"
-            placeholderTextColor="#64748b"
+            placeholder="you@company.com"
+            placeholderTextColor={colors.placeholder}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
@@ -344,12 +392,14 @@ export default function App() {
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color="#0f172a" />
+              <ActivityIndicator color={colors.bg} />
             ) : (
-              <Text style={styles.primaryBtnText}>Connect email with Google</Text>
+              <Text style={styles.primaryBtnText}>Continue with Google</Text>
             )}
           </Pressable>
-          <Text style={styles.hint}>API: {getApiUrl()}</Text>
+          {__DEV__ ? (
+            <Text style={styles.devHint}>{getApiUrl()}</Text>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -359,12 +409,11 @@ export default function App() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <StatusBar style="light" />
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Never Miss</Text>
-        <Text style={styles.headerSub} numberOfLines={1}>
-          {me?.email ?? "…"}
+        <Text style={styles.headerEmail} numberOfLines={1}>
+          {me?.email ?? "—"}
         </Text>
       </View>
-      <View style={styles.tabs}>
+      <View style={styles.tabBar}>
         {(["feed", "rules", "settings"] as const).map((k) => (
           <Pressable
             key={k}
@@ -380,39 +429,41 @@ export default function App() {
 
       {tab === "feed" && (
         <View style={styles.panel}>
-          <Pressable
-            style={styles.secondaryBtn}
-            onPress={() =>
-              token &&
-              api.triggerSync(token).then(() => refreshAll()).catch(() => {})
-            }
-          >
-            <Text style={styles.secondaryBtnText}>Sync now</Text>
-          </Pressable>
           <FlatList
             data={captures}
             keyExtractor={(item) => item.id}
-            refreshing={busy}
+            contentContainerStyle={styles.listContent}
+            refreshing={listRefreshing}
             onRefresh={() => {
-              setBusy(true);
-              refreshAll().finally(() => setBusy(false));
+              setListRefreshing(true);
+              const p = refreshAll();
+              const s = token
+                ? api.triggerSync(token).catch(() => {})
+                : Promise.resolve();
+              void Promise.all([p, s]).finally(() => setListRefreshing(false));
             }}
             ListEmptyComponent={
               <Text style={styles.empty}>
-                No important mail here yet. On the Rules tab, add what matters to
-                you, then tap Sync now. New matches appear here and send a
-                notification if you allowed alerts.
+                Nothing yet. Add rules, pull down to refresh, or open Gmail from
+                Account.
               </Text>
             }
             renderItem={({ item }) => (
               <Pressable style={styles.card} onPress={openGmail}>
-                <Text style={styles.cardSubject}>{item.subject}</Text>
-                <Text style={styles.cardFrom}>{item.fromAddr}</Text>
+                <Text style={styles.cardSubject} numberOfLines={2}>
+                  {item.subject || "(No subject)"}
+                </Text>
+                <Text style={styles.cardFrom} numberOfLines={1}>
+                  {item.fromAddr}
+                </Text>
                 <Text style={styles.cardSnippet} numberOfLines={3}>
                   {item.snippet}
                 </Text>
                 <Text style={styles.cardMeta}>
-                  {new Date(item.receivedAt).toLocaleString()}
+                  {new Date(item.receivedAt).toLocaleString(undefined, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
                 </Text>
               </Pressable>
             )}
@@ -423,16 +474,15 @@ export default function App() {
       {tab === "rules" && (
         <View style={styles.panel}>
           <Text style={styles.rulesIntro}>
-            Tell the app which mail is important. Anything that matches below is
-            listed under Important and can notify you.
+            Messages that match a rule appear under Important.
           </Text>
-          <Text style={styles.label}>Match type</Text>
+          <Text style={styles.label}>Match</Text>
           <View style={styles.row}>
             {(
               [
                 ["sender_email", "Email"],
                 ["domain", "Domain"],
-                ["gmail_label_id", "Label ID"],
+                ["gmail_label_id", "Label"],
               ] as const
             ).map(([v, label]) => (
               <Pressable
@@ -458,12 +508,12 @@ export default function App() {
             style={styles.input}
             placeholder={
               newRuleType === "domain"
-                ? "e.g. client.com"
+                ? "client.com"
                 : newRuleType === "gmail_label_id"
-                  ? "Gmail label id from API"
-                  : "full@address.com"
+                  ? "Label ID"
+                  : "name@company.com"
             }
-            placeholderTextColor="#64748b"
+            placeholderTextColor={colors.placeholder}
             autoCapitalize="none"
             value={newRuleValue}
             onChangeText={setNewRuleValue}
@@ -478,17 +528,34 @@ export default function App() {
           <FlatList
             data={rules}
             keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
             ListHeaderComponent={
-              <Text style={styles.sectionTitle}>Important-mail rules</Text>
+              rules.length > 0 ? (
+                <Text style={styles.sectionTitle}>Active rules</Text>
+              ) : null
+            }
+            ListEmptyComponent={
+              <Text style={styles.rulesEmpty}>No rules yet.</Text>
             }
             renderItem={({ item }) => (
               <View style={styles.ruleRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.ruleType}>{item.type}</Text>
-                  <Text style={styles.ruleVal}>{item.value}</Text>
+                <View style={styles.ruleMain}>
+                  <Text style={styles.ruleType}>{ruleTypeLabel(item.type)}</Text>
+                  <Text style={styles.ruleVal} numberOfLines={2}>
+                    {item.value}
+                  </Text>
                 </View>
-                <Switch value={item.enabled} onValueChange={() => toggleRule(item)} />
-                <Pressable onPress={() => removeRule(item.id)} hitSlop={8}>
+                <Switch
+                  value={item.enabled}
+                  onValueChange={() => toggleRule(item)}
+                  trackColor={{ false: colors.border, true: colors.accentDim }}
+                  thumbColor={item.enabled ? colors.text : colors.placeholder}
+                />
+                <Pressable
+                  onPress={() => removeRule(item.id)}
+                  hitSlop={12}
+                  style={styles.ruleRemoveHit}
+                >
                   <Text style={styles.danger}>Remove</Text>
                 </Pressable>
               </View>
@@ -499,20 +566,17 @@ export default function App() {
 
       {tab === "settings" && (
         <View style={styles.panel}>
-          {me?.lastSyncError ? (
-            <Text style={styles.warn}>Last sync error: {me.lastSyncError}</Text>
-          ) : null}
-          {shouldSkipExpoNotificationsModule() ? (
-            <Text style={styles.warn}>
-              Expo Go on Android does not support remote push. Use a development
-              build or a physical iOS device with Expo Go to test push, or rely on
-              in-app sync.
-            </Text>
-          ) : null}
-          <Text style={styles.body}>
-            Notifications use Expo push. For production, configure EAS with FCM
-            and APNs credentials.
-          </Text>
+          <View style={styles.settingsBlock}>
+            {me?.lastSyncError ? (
+              <Text style={styles.warnBanner}>{me.lastSyncError}</Text>
+            ) : null}
+            {shouldSkipExpoNotificationsModule() ? (
+              <Text style={styles.infoBanner}>
+                Remote push is not available in Expo Go on this device. Pull to
+                refresh on Important, or use a dev build for push.
+              </Text>
+            ) : null}
+          </View>
           <Pressable style={styles.secondaryBtn} onPress={openGmail}>
             <Text style={styles.secondaryBtnText}>Open Gmail</Text>
           </Pressable>
@@ -522,7 +586,11 @@ export default function App() {
               token && registerPush(token).catch(() => {})
             }
           >
-            <Text style={styles.secondaryBtnText}>Re-register push token</Text>
+            <Text style={styles.secondaryBtnText}>Refresh push registration</Text>
+          </Pressable>
+          <View style={styles.settingsSpacer} />
+          <Pressable style={styles.linkBtn} onPress={signOut}>
+            <Text style={styles.linkText}>Sign out</Text>
           </Pressable>
           <Pressable
             style={[styles.dangerBtn, busy && styles.btnDisabled]}
@@ -538,10 +606,7 @@ export default function App() {
             }}
             disabled={busy}
           >
-            <Text style={styles.dangerBtnText}>Delete account & disconnect</Text>
-          </Pressable>
-          <Pressable style={styles.linkBtn} onPress={signOut}>
-            <Text style={styles.linkText}>Sign out (this device)</Text>
+            <Text style={styles.dangerBtnText}>Delete account</Text>
           </Pressable>
         </View>
       )}
@@ -549,129 +614,225 @@ export default function App() {
   );
 }
 
+const colors = {
+  bg: "#0b1020",
+  surface: "#121a2e",
+  surfaceHover: "#182236",
+  border: "#2a3650",
+  text: "#f1f5f9",
+  textMuted: "#94a3b8",
+  placeholder: "#64748b",
+  accent: "#22d3ee",
+  accentDim: "#0e7490",
+  danger: "#f87171",
+  dangerSurface: "#3f1518",
+};
+
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#0f172a" },
+  safe: { flex: 1, backgroundColor: colors.bg },
   centered: {
     flex: 1,
-    backgroundColor: "#0f172a",
+    backgroundColor: colors.bg,
     alignItems: "center",
     justifyContent: "center",
+    gap: 16,
   },
-  hero: { padding: 24, gap: 16 },
-  title: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#f8fafc",
-    letterSpacing: -0.5,
-  },
-  sub: { fontSize: 16, color: "#94a3b8", lineHeight: 22 },
-  stepHint: {
+  loadingLabel: {
     fontSize: 14,
-    color: "#64748b",
-    lineHeight: 20,
-    fontWeight: "600",
+    color: colors.textMuted,
+    letterSpacing: 0.3,
   },
-  hint: { fontSize: 12, color: "#475569", marginTop: 8 },
-  header: { paddingHorizontal: 20, paddingBottom: 8 },
-  headerTitle: { fontSize: 22, fontWeight: "700", color: "#f8fafc" },
-  headerSub: { fontSize: 14, color: "#94a3b8" },
-  tabs: { flexDirection: "row", paddingHorizontal: 12, gap: 8 },
+  hero: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 32, gap: 14, maxWidth: 440 },
+  title: {
+    fontSize: 30,
+    fontWeight: "700",
+    color: colors.text,
+    letterSpacing: -0.6,
+  },
+  sub: { fontSize: 15, color: colors.textMuted, lineHeight: 22 },
+  devHint: {
+    fontSize: 11,
+    color: colors.placeholder,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace" }),
+    marginTop: 4,
+  },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  headerEmail: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: colors.text,
+  },
+  tabBar: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
   tab: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: "#1e293b",
-    alignItems: "center",
-  },
-  tabOn: { backgroundColor: "#38bdf8" },
-  tabText: { color: "#94a3b8", fontWeight: "600", fontSize: 13 },
-  tabTextOn: { color: "#0f172a" },
-  panel: { flex: 1, padding: 16, gap: 12 },
-  primaryBtn: {
-    backgroundColor: "#38bdf8",
     paddingVertical: 14,
-    borderRadius: 12,
     alignItems: "center",
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
   },
-  primaryBtnText: { color: "#0f172a", fontWeight: "700", fontSize: 16 },
-  btnDisabled: { opacity: 0.6 },
+  tabOn: { borderBottomColor: colors.accent },
+  tabText: {
+    color: colors.textMuted,
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  tabTextOn: { color: colors.text },
+  panel: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
+  listContent: { paddingBottom: 24, paddingTop: 4, flexGrow: 1 },
+  primaryBtn: {
+    backgroundColor: colors.accent,
+    paddingVertical: 15,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 6,
+  },
+  primaryBtnText: { color: colors.bg, fontWeight: "700", fontSize: 16 },
+  btnDisabled: { opacity: 0.55 },
   secondaryBtn: {
     borderWidth: 1,
-    borderColor: "#334155",
-    paddingVertical: 12,
-    borderRadius: 12,
+    borderColor: colors.border,
+    paddingVertical: 13,
+    borderRadius: 10,
     alignItems: "center",
-  },
-  secondaryBtnText: { color: "#e2e8f0", fontWeight: "600" },
-  card: {
-    backgroundColor: "#1e293b",
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: colors.surface,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#334155",
   },
-  cardSubject: { color: "#f8fafc", fontSize: 17, fontWeight: "700" },
-  cardFrom: { color: "#38bdf8", marginTop: 4, fontSize: 13 },
-  cardSnippet: { color: "#cbd5e1", marginTop: 8, fontSize: 14, lineHeight: 20 },
-  cardMeta: { color: "#64748b", marginTop: 8, fontSize: 12 },
-  empty: { color: "#64748b", textAlign: "center", marginTop: 32, paddingHorizontal: 16 },
-  label: { color: "#94a3b8", fontSize: 13, fontWeight: "600" },
-  row: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#1e293b",
-    borderWidth: 1,
-    borderColor: "#334155",
-  },
-  chipOn: { borderColor: "#38bdf8", backgroundColor: "#082f49" },
-  chipText: { color: "#94a3b8", fontSize: 13, fontWeight: "600" },
-  chipTextOn: { color: "#7dd3fc" },
-  input: {
-    backgroundColor: "#1e293b",
+  secondaryBtnText: { color: colors.text, fontWeight: "600", fontSize: 15 },
+  card: {
+    backgroundColor: colors.surface,
     borderRadius: 12,
-    padding: 14,
-    color: "#f8fafc",
-    borderWidth: 1,
-    borderColor: "#334155",
+    padding: 16,
+    marginBottom: 10,
   },
-  sectionTitle: {
-    color: "#f8fafc",
-    fontWeight: "700",
-    fontSize: 16,
-    marginBottom: 8,
-  },
-  rulesIntro: {
-    color: "#94a3b8",
+  cardSubject: { color: colors.text, fontSize: 16, fontWeight: "600" },
+  cardFrom: { color: colors.accent, marginTop: 6, fontSize: 13 },
+  cardSnippet: {
+    color: colors.textMuted,
+    marginTop: 10,
     fontSize: 14,
     lineHeight: 20,
-    marginBottom: 4,
+  },
+  cardMeta: { color: colors.placeholder, marginTop: 12, fontSize: 12 },
+  empty: {
+    color: colors.textMuted,
+    textAlign: "center",
+    marginTop: 48,
+    paddingHorizontal: 24,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  rulesEmpty: {
+    color: colors.placeholder,
+    fontSize: 14,
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  label: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  row: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  chipOn: { borderColor: colors.accent, backgroundColor: colors.surfaceHover },
+  chipText: { color: colors.textMuted, fontSize: 14, fontWeight: "600" },
+  chipTextOn: { color: colors.accent },
+  input: {
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.border,
+    fontSize: 16,
+    marginTop: 8,
+  },
+  sectionTitle: {
+    color: colors.textMuted,
+    fontWeight: "600",
+    fontSize: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 10,
+    marginTop: 4,
+  },
+  rulesIntro: {
+    color: colors.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 8,
   },
   ruleRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1e293b",
-  },
-  ruleType: { color: "#64748b", fontSize: 12, textTransform: "uppercase" },
-  ruleVal: { color: "#e2e8f0", fontSize: 15, fontWeight: "600" },
-  danger: { color: "#f87171", fontWeight: "600", marginLeft: 8 },
-  body: { color: "#94a3b8", lineHeight: 22 },
-  warn: { color: "#fbbf24", marginBottom: 8 },
-  dangerBtn: {
-    marginTop: 16,
-    backgroundColor: "#450a0a",
+    gap: 10,
     paddingVertical: 14,
-    borderRadius: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  ruleMain: { flex: 1, minWidth: 0 },
+  ruleType: {
+    color: colors.placeholder,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  ruleVal: { color: colors.text, fontSize: 15, fontWeight: "500", marginTop: 4 },
+  ruleRemoveHit: { paddingVertical: 4, paddingLeft: 4 },
+  danger: { color: colors.danger, fontWeight: "600", fontSize: 14 },
+  settingsBlock: { gap: 10, marginBottom: 8 },
+  warnBanner: {
+    color: "#fcd34d",
+    fontSize: 14,
+    lineHeight: 20,
+    backgroundColor: "#422006",
+    padding: 12,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  infoBanner: {
+    color: colors.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+    backgroundColor: colors.surface,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  settingsSpacer: { height: 8 },
+  dangerBtn: {
+    marginTop: 20,
+    backgroundColor: colors.dangerSurface,
+    paddingVertical: 14,
+    borderRadius: 10,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#7f1d1d",
   },
-  dangerBtnText: { color: "#fecaca", fontWeight: "700" },
-  linkBtn: { marginTop: 16, alignItems: "center" },
-  linkText: { color: "#38bdf8", fontWeight: "600" },
+  dangerBtnText: { color: colors.danger, fontWeight: "700", fontSize: 15 },
+  linkBtn: { marginTop: 8, alignItems: "center", paddingVertical: 12 },
+  linkText: { color: colors.accent, fontWeight: "600", fontSize: 15 },
 });
