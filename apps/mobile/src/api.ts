@@ -30,11 +30,14 @@ async function req<T>(
   token: string,
   init?: RequestInit,
 ): Promise<T> {
+  const body = init?.body;
+  const hasJsonBody =
+    typeof body === "string" && body.length > 0;
   const res = await fetch(`${base()}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
+      ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
       ...(init?.headers ?? {}),
     },
   });

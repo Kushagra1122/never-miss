@@ -35,11 +35,22 @@ export async function syncAccount(accountId: string): Promise<void> {
     const hist = await syncHistory(refreshToken, acc.historyId);
 
     if (!acc.historyId) {
-      messageIds = await listRecentMessageIds(refreshToken, 40);
+      messageIds = await listRecentMessageIds(refreshToken, 50);
     } else if (hist.historyInvalid) {
       messageIds = await listRecentMessageIds(refreshToken, 50);
     } else {
       messageIds = hist.messageIds;
+    }
+
+    // Incremental history only sees *new* changes. If the user adds a rule after mail
+    // already arrived, those message IDs are never in history — merge a recent scan.
+    if (
+      userRules.length > 0 &&
+      acc.historyId &&
+      !hist.historyInvalid
+    ) {
+      const recent = await listRecentMessageIds(refreshToken, 50);
+      messageIds = [...new Set([...messageIds, ...recent])];
     }
 
     const nextHistoryId = hist.nextHistoryId;

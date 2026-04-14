@@ -280,6 +280,7 @@ export default function App() {
         value: newRuleValue.trim(),
       });
       setNewRuleValue("");
+      await api.triggerSync(token).catch(() => {});
       await refreshAll();
     } finally {
       setBusy(false);

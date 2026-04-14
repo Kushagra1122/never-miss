@@ -187,10 +187,12 @@ export async function listRecentMessageIds(
   maxResults: number,
 ): Promise<string[]> {
   const gmail = gmailClientForRefresh(refreshToken);
+  // Do not require `in:inbox` — mail can land in Updates/Promotions or be matched late
+  // after a rule is added (history cursor would otherwise skip it).
   const res = await gmail.users.messages.list({
     userId: "me",
     maxResults,
-    q: "in:inbox newer_than:7d",
+    q: "newer_than:14d",
   });
   return (res.data.messages ?? []).map((m) => m.id!).filter(Boolean);
 }
