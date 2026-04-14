@@ -79,13 +79,19 @@ export async function registerExpoPushWithApi(
   registerDevice: (s: string, expoPushToken: string) => Promise<unknown>,
 ): Promise<void> {
   if (shouldSkipExpoNotificationsModule()) return;
-  const Notifications = await import("expo-notifications");
-  const { status } = await Notifications.requestPermissionsAsync();
-  if (status !== "granted") return;
-  await ensureAndroidMailChannel();
-  const push = await Notifications.getExpoPushTokenAsync();
-  const expoPushToken = push.data;
-  if (expoPushToken) {
-    await registerDevice(session, expoPushToken);
+  try {
+    const Notifications = await import("expo-notifications");
+    const { status } = await Notifications.requestPermissionsAsync();
+    if (status !== "granted") return;
+    await ensureAndroidMailChannel();
+    const push = await Notifications.getExpoPushTokenAsync();
+    const expoPushToken = push.data;
+    if (expoPushToken) {
+      await registerDevice(session, expoPushToken);
+    }
+  } catch {
+    // Android release builds need Firebase (google-services.json) + FCM in Expo
+    // (https://docs.expo.dev/push-notifications/fcm-credentials/). Push is optional;
+    // do not fail sign-in or show a generic "Couldn't connect" alert.
   }
 }

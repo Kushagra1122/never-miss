@@ -6,7 +6,12 @@
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
-    "ios": "expo start --ios"
+    "ios": "expo start --ios",
+    "android:run": "expo run:android",
+    "ios:run": "expo run:ios",
+    "android:apk": "bash ./scripts/android-release-apk.sh",
+    "build:apk": "eas build -p android --profile preview",
+    "build:apk:local": "eas build -p android --profile preview --local"
   },
   "dependencies": {
     "expo": "~54.0.0",

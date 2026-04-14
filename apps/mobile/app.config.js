@@ -27,6 +27,18 @@ function loadEnvFile(filePath, override) {
 loadEnvFile(path.join(__dirname, "../../.env"), false);
 loadEnvFile(path.join(__dirname, ".env"), true);
 
+/** Prefer apps/mobile; else monorepo root (never-miss/google-services.json). */
+const googleServicesCandidates = [
+  path.join(__dirname, "google-services.json"),
+  path.join(__dirname, "..", "..", "google-services.json"),
+];
+const googleServicesJson = googleServicesCandidates.find((p) =>
+  fs.existsSync(p),
+);
+const googleServicesFile = googleServicesJson
+  ? path.relative(__dirname, googleServicesJson).split(path.sep).join("/")
+  : null;
+
 module.exports = ({ config }) => ({
   ...config,
   name: "Never Miss",
@@ -51,6 +63,7 @@ module.exports = ({ config }) => ({
       backgroundColor: "#0f172a",
     },
     package: "com.nevermiss.app",
+    ...(googleServicesFile ? { googleServicesFile: googleServicesFile } : {}),
   },
   plugins: [
     [
@@ -64,5 +77,8 @@ module.exports = ({ config }) => ({
   extra: {
     apiUrl:
       process.env.EXPO_PUBLIC_API_URL ?? "https://never-miss-api.onrender.com",
+    eas: {
+      projectId: "b4cfd82d-4a35-475e-98fc-ae90b408108e",
+    },
   },
 });
