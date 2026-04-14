@@ -1,0 +1,21 @@
+{
+  "name": "never-miss",
+  "private": true,
+  "overrides": {
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "workspaces": [
+    "services/api",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait && npm run db:migrate",
+    "db:generate": "npm run db:generate -w services/api",
+    "db:migrate": "env DATABASE_URL=postgres://nevermiss:nevermiss@127.0.0.1:5433/nevermiss npm run db:migrate -w services/api",
+    "api": "npm run dev -w services/api",
+    "mobile": "npm start -w apps/mobile"
+  }
+}

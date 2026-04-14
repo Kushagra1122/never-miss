@@ -1,0 +1,42 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# After pushing to GitHub/GitLab/Bitbucket, open:
+#   https://dashboard.render.com/blueprint/new?repo=<YOUR_HTTPS_REPO_URL>
+
+databases:
+  - name: never-miss-db
+    databaseName: nevermiss
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: never-miss-api
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    # --include=dev keeps TypeScript available when NODE_ENV=production during build
+    buildCommand: npm ci --include=dev && npm run build -w services/api && npm run db:migrate:prod -w services/api
+    startCommand: npm run start -w services/api
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: never-miss-db
+          property: connectionString
+      # OAuth redirect / token exchange — set in Dashboard to match your Google Cloud client
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      # Must be 64 hex chars (32 bytes AES-256). Generate: openssl rand -hex 32
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: MOBILE_APP_SCHEME
+        value: nevermiss
+      - key: POLL_INTERVAL_MS
+        value: "120000"
