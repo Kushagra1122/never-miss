@@ -1,4 +1,4 @@
-/** Prefix so Metro / device logs are easy to filter: `npx react-native log-android` or Xcode console */
+/** Prefix so device logs are filterable (Metro often won’t show device console.log). */
 const TAG = "[NeverMiss OAuth]";
 
 export function redactUrlForLog(url: string | undefined): string {
@@ -16,12 +16,16 @@ export function logOAuth(step: string, data: Record<string, unknown>): void {
 }
 
 /**
- * Read token / error from the post-login redirect. Handles:
- * - `scheme://auth?token=...`
- * - `exp://.../--/auth?token=...`
- * - Hash-only: `scheme://path#token=...` (some WebView stacks)
+ * Extract URL from openAuthSessionAsync result (only success carries `url`).
  */
-/** Safe log line for openAuthSessionAsync outcome */
+export function getWebBrowserCallbackUrl(result: {
+  type: string;
+  url?: string;
+}): string | undefined {
+  if (result.type === "success" && result.url?.length) return result.url;
+  return undefined;
+}
+
 export function summarizeAuthSessionResult(result: {
   type: string;
   url?: string;
@@ -35,6 +39,32 @@ export function summarizeAuthSessionResult(result: {
   return { type: result.type };
 }
 
+/**
+ * Android: `openAuthSessionAsync` uses a polyfill that races AppState vs Linking.
+ * Often `dismiss` wins before the `exp://…?token=` URL is observed — wait for the deep link.
+ */
+export async function waitForOAuthDeepLink(
+  getCaptured: () => string | undefined,
+  ms = 3500,
+  intervalMs = 60,
+): Promise<string | undefined> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const u = getCaptured();
+    if (u && (u.includes("token=") || u.includes("error="))) return u;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  const last = getCaptured();
+  if (last && (last.includes("token=") || last.includes("error="))) return last;
+  return undefined;
+}
+
+/**
+ * Read token / error from the post-login redirect. Handles:
+ * - `scheme://auth?token=...`
+ * - `exp://.../--/auth?token=...`
+ * - Hash-only: `scheme://path#token=...` (some WebView stacks)
+ */
 export function parseAuthRedirect(url: string): {
   token?: string;
   error?: string;

@@ -18,10 +18,12 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiUrl } from "./src/config";
 import {
+  getWebBrowserCallbackUrl,
   logOAuth,
   parseAuthRedirect,
   redactUrlForLog,
   summarizeAuthSessionResult,
+  waitForOAuthDeepLink,
 } from "./src/oauthRedirect";
 import * as api from "./src/api";
 import {
@@ -146,32 +148,40 @@ export default function App() {
       );
       logOAuth("webbrowser_finished", summarizeAuthSessionResult(result));
 
-      if (result.type === "dismiss" || result.type === "cancel") {
-        logOAuth("user_closed_browser", { type: result.type });
-        return;
+      // Prefer URL from WebBrowser; Android often resolves with dismiss before Linking fires.
+      let callbackUrl = getWebBrowserCallbackUrl(result);
+
+      if (!callbackUrl) {
+        logOAuth("poll_deep_link_start", { browserResult: result.type });
+        callbackUrl = await waitForOAuthDeepLink(() => linkUrlCaptured);
+        if (callbackUrl) {
+          logOAuth("poll_deep_link_ok", { url: redactUrlForLog(callbackUrl) });
+        }
       }
 
-      let callbackUrl: string | undefined =
-        result.type === "success" ? result.url : undefined;
-
-      if (
-        (!callbackUrl || callbackUrl.length === 0) &&
-        linkUrlCaptured?.length
-      ) {
-        logOAuth("using_deep_link_fallback", {
-          url: redactUrlForLog(linkUrlCaptured),
-        });
-        callbackUrl = linkUrlCaptured;
+      if (!callbackUrl) {
+        const initial = await Linking.getInitialURL();
+        if (
+          initial &&
+          (initial.includes("token=") || initial.includes("error="))
+        ) {
+          logOAuth("from_getInitialURL", { url: redactUrlForLog(initial) });
+          callbackUrl = initial;
+        }
       }
 
-      if (!callbackUrl?.length) {
+      if (!callbackUrl) {
+        if (result.type === "dismiss" || result.type === "cancel") {
+          logOAuth("user_closed_browser", { type: result.type });
+          return;
+        }
         logOAuth("no_callback_url", {
           resultType: result.type,
-          hadLinkFallback: Boolean(linkUrlCaptured),
+          hadCapturedLink: Boolean(linkUrlCaptured),
         });
         Alert.alert(
           "Couldn’t connect",
-          "The sign-in window closed before finishing. Try again. (Check Metro logs for [NeverMiss OAuth])",
+          `No session in the redirect. Browser reported: ${result.type}. On a phone, Metro may not show logs — use a USB cable and adb logcat, or try again after Google sign-in completes.`,
         );
         return;
       }
