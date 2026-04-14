@@ -17,6 +17,12 @@ import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getApiUrl } from "./src/config";
+import {
+  logOAuth,
+  parseAuthRedirect,
+  redactUrlForLog,
+  summarizeAuthSessionResult,
+} from "./src/oauthRedirect";
 import * as api from "./src/api";
 import {
   initNotificationHandler,
@@ -29,18 +35,6 @@ WebBrowser.maybeCompleteAuthSession();
 const TOKEN_KEY = "nevermiss_session";
 
 type Tab = "feed" | "rules" | "settings";
-
-function parseAuthRedirect(url: string): { token?: string; error?: string } {
-  try {
-    const q = url.includes("?") ? url.split("?")[1]!.split("#")[0] : "";
-    const params = new URLSearchParams(q);
-    const token = params.get("token") ?? undefined;
-    const error = params.get("error") ?? undefined;
-    return { token: token ?? undefined, error: error ?? undefined };
-  } catch {
-    return {};
-  }
-}
 
 function formatConnectError(code: string): string {
   const key = decodeURIComponent(code).replace(/\+/g, " ");
@@ -117,6 +111,17 @@ export default function App() {
 
   const signIn = async () => {
     setBusy(true);
+    let linkUrlCaptured: string | undefined;
+    const linkSub = Linking.addEventListener("url", ({ url }) => {
+      logOAuth("deep_link_received", {
+        url: redactUrlForLog(url),
+        hasTokenParam: url.includes("token="),
+        hasErrorParam: url.includes("error="),
+      });
+      if (url.includes("token=") || url.includes("error=")) {
+        linkUrlCaptured = url;
+      }
+    });
     try {
       const redirectUri = AuthSession.makeRedirectUri({
         scheme: "nevermiss",
@@ -130,41 +135,82 @@ export default function App() {
         params.set("login_hint", hint);
       }
       const authUrl = `${apiUrl}/auth/google?${params.toString()}`;
+      logOAuth("session_start", {
+        redirectUri,
+        apiUrl,
+        authUrl,
+      });
       const result = await WebBrowser.openAuthSessionAsync(
         authUrl,
         redirectUri,
       );
+      logOAuth("webbrowser_finished", summarizeAuthSessionResult(result));
+
       if (result.type === "dismiss" || result.type === "cancel") {
+        logOAuth("user_closed_browser", { type: result.type });
         return;
       }
-      if (result.type !== "success" || !result.url) {
+
+      let callbackUrl: string | undefined =
+        result.type === "success" ? result.url : undefined;
+
+      if (
+        (!callbackUrl || callbackUrl.length === 0) &&
+        linkUrlCaptured?.length
+      ) {
+        logOAuth("using_deep_link_fallback", {
+          url: redactUrlForLog(linkUrlCaptured),
+        });
+        callbackUrl = linkUrlCaptured;
+      }
+
+      if (!callbackUrl?.length) {
+        logOAuth("no_callback_url", {
+          resultType: result.type,
+          hadLinkFallback: Boolean(linkUrlCaptured),
+        });
         Alert.alert(
           "Couldn’t connect",
-          "The sign-in window closed before finishing. Try again.",
+          "The sign-in window closed before finishing. Try again. (Check Metro logs for [NeverMiss OAuth])",
         );
         return;
       }
-      const { token: t, error } = parseAuthRedirect(result.url);
+
+      const parsed = parseAuthRedirect(callbackUrl);
+      logOAuth("parsed_redirect", {
+        hasToken: Boolean(parsed.token),
+        tokenLength: parsed.token?.length ?? 0,
+        error: parsed.error ?? null,
+      });
+
+      const t = parsed.token;
+      const error = parsed.error;
       if (error) {
         Alert.alert("Couldn’t connect", formatConnectError(error));
         return;
       }
       if (!t) {
+        logOAuth("parse_failed_empty", {
+          callbackUrl: redactUrlForLog(callbackUrl),
+        });
         Alert.alert(
           "Couldn’t connect",
-          "No session was returned. Try signing in again.",
+          "No session in redirect URL. Check Metro logs for [NeverMiss OAuth] and the line parse_failed_empty.",
         );
         return;
       }
       await SecureStore.setItemAsync(TOKEN_KEY, t);
       setToken(t);
       setConnectEmailHint("");
+      logOAuth("session_stored_ok", { tokenLength: t.length });
       await registerPush(t);
       await api.triggerSync(t).catch(() => {});
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      logOAuth("session_throw", { message: msg });
       Alert.alert("Couldn’t connect", msg);
     } finally {
+      linkSub.remove();
       setBusy(false);
     }
   };
