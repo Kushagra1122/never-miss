@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   Linking,
+  Platform,
   Pressable,
   StyleSheet,
   Switch,
@@ -141,21 +142,53 @@ export default function App() {
         redirectUri,
         apiUrl,
         authUrl,
+        platform: Platform.OS,
       });
-      const result = await WebBrowser.openAuthSessionAsync(
-        authUrl,
-        redirectUri,
-      );
-      logOAuth("webbrowser_finished", summarizeAuthSessionResult(result));
 
-      // Prefer URL from WebBrowser; Android often resolves with dismiss before Linking fires.
-      let callbackUrl = getWebBrowserCallbackUrl(result);
+      let callbackUrl: string | undefined;
 
-      if (!callbackUrl) {
-        logOAuth("poll_deep_link_start", { browserResult: result.type });
-        callbackUrl = await waitForOAuthDeepLink(() => linkUrlCaptured);
-        if (callbackUrl) {
-          logOAuth("poll_deep_link_ok", { url: redactUrlForLog(callbackUrl) });
+      if (Platform.OS === "android") {
+        /**
+         * expo-web-browser `openAuthSessionAsync` on Android uses a polyfill that
+         * Promise.races Linking vs AppState; dismiss often wins and the success URL is lost
+         * even when the API already redirected to exp://…?token= (see Render logs).
+         * Open a normal tab and wait only on our Linking listener.
+         */
+        logOAuth("android_using_open_browser_async", {});
+        const deeplinkPromise = waitForOAuthDeepLink(
+          () => linkUrlCaptured,
+          120_000,
+        );
+        WebBrowser.openBrowserAsync(authUrl).catch((e) => {
+          logOAuth("open_browser_error", { message: String(e) });
+        });
+        callbackUrl = await deeplinkPromise;
+        await WebBrowser.dismissBrowser().catch(() => {});
+        logOAuth("android_wait_done", { hasUrl: Boolean(callbackUrl) });
+      } else {
+        const result = await WebBrowser.openAuthSessionAsync(
+          authUrl,
+          redirectUri,
+        );
+        logOAuth("webbrowser_finished", summarizeAuthSessionResult(result));
+
+        callbackUrl = getWebBrowserCallbackUrl(result);
+
+        if (!callbackUrl) {
+          logOAuth("poll_deep_link_start", { browserResult: result.type });
+          callbackUrl = await waitForOAuthDeepLink(() => linkUrlCaptured);
+          if (callbackUrl) {
+            logOAuth("poll_deep_link_ok", {
+              url: redactUrlForLog(callbackUrl),
+            });
+          }
+        }
+
+        if (!callbackUrl) {
+          if (result.type === "dismiss" || result.type === "cancel") {
+            logOAuth("user_closed_browser", { type: result.type });
+            return;
+          }
         }
       }
 
@@ -171,17 +204,14 @@ export default function App() {
       }
 
       if (!callbackUrl) {
-        if (result.type === "dismiss" || result.type === "cancel") {
-          logOAuth("user_closed_browser", { type: result.type });
-          return;
-        }
         logOAuth("no_callback_url", {
-          resultType: result.type,
           hadCapturedLink: Boolean(linkUrlCaptured),
         });
         Alert.alert(
           "Couldn’t connect",
-          `No session in the redirect. Browser reported: ${result.type}. On a phone, Metro may not show logs — use a USB cable and adb logcat, or try again after Google sign-in completes.`,
+          Platform.OS === "android"
+            ? "Sign-in did not return to the app in time. Finish Google, then when the browser tries to open Expo Go, allow it. Or try again."
+            : `No session in the redirect. Browser may have closed too early — try again.`,
         );
         return;
       }
