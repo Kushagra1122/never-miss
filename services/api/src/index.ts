@@ -34,6 +34,12 @@ async function main() {
     timeWindow: process.env.RATE_LIMIT_WINDOW_MS || "1 minute",
   });
 
+  app.get("/", async () => ({
+    ok: true,
+    service: "never-miss-api",
+    docs: "Use GET /health for a health check; API routes are under /auth and /v1.",
+  }));
+
   await app.register(authRoutes);
   await app.register(v1Routes, { prefix: "/v1" });
 
