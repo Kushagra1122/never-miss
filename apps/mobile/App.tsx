@@ -41,6 +41,12 @@ type Tab = "feed" | "rules" | "settings";
 
 function formatConnectError(code: string): string {
   const key = decodeURIComponent(code).replace(/\+/g, " ");
+  if (
+    key.includes("Gmail API") &&
+    (key.includes("disabled") || key.includes("has not been used"))
+  ) {
+    return "Enable the Gmail API in Google Cloud: APIs & Services → Library → search “Gmail API” → Enable. Wait a minute, then try Connect again.";
+  }
   const hints: Record<string, string> = {
     google_access_denied:
       "Sign-in was cancelled. Your inbox was not connected.",
@@ -159,11 +165,13 @@ export default function App() {
           () => linkUrlCaptured,
           120_000,
         );
-        WebBrowser.openBrowserAsync(authUrl).catch((e) => {
-          logOAuth("open_browser_error", { message: String(e) });
-        });
+        void Promise.resolve(WebBrowser.openBrowserAsync(authUrl)).catch(
+          (e: unknown) => {
+            logOAuth("open_browser_error", { message: String(e) });
+          },
+        );
         callbackUrl = await deeplinkPromise;
-        await WebBrowser.dismissBrowser().catch(() => {});
+        await Promise.resolve(WebBrowser.dismissBrowser?.()).catch(() => {});
         logOAuth("android_wait_done", { hasUrl: Boolean(callbackUrl) });
       } else {
         const result = await WebBrowser.openAuthSessionAsync(
