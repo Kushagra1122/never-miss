@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../db/schema.js";
 import { decryptSecret } from "../lib/crypto.js";
 import { verifySession } from "../lib/jwt.js";
+import { sendExpoPush } from "../services/push.js";
 import { syncAccount } from "../services/sync.js";
 
 const ruleBody = z.object({
@@ -51,10 +52,15 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
       .from(googleAccounts)
       .where(eq(googleAccounts.userId, req.userId!))
       .limit(1);
+    const [tok] = await db
+      .select({ deviceTokenCount: count() })
+      .from(deviceTokens)
+      .where(eq(deviceTokens.userId, req.userId!));
     return {
       userId: req.userId,
       email: ga?.email ?? null,
       lastSyncError: ga?.lastSyncError ?? null,
+      deviceTokenCount: Number(tok?.deviceTokenCount ?? 0),
     };
   });
 
@@ -161,6 +167,26 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
     }
     await syncAccount(ga.id);
     return { ok: true };
+  });
+
+  /** Sends one test push to all tokens for this user (verifies Expo/FCM end-to-end). */
+  app.post("/push/test", async (req, reply) => {
+    const rows = await db
+      .select({ t: deviceTokens.expoPushToken })
+      .from(deviceTokens)
+      .where(eq(deviceTokens.userId, req.userId!));
+    const uniq = [...new Set(rows.map((r) => r.t))];
+    if (uniq.length === 0) {
+      return reply.code(400).send({
+        error: "no_device_tokens",
+        message:
+          "No Expo push token stored. In the app: Account → Refresh push registration.",
+      });
+    }
+    await sendExpoPush(uniq, "Never Miss", "Test notification — pipeline OK.", {
+      type: "test",
+    });
+    return { ok: true, deviceCount: uniq.length };
   });
 
   app.delete("/account", async (req) => {

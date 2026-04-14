@@ -84,9 +84,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("feed");
   const [busy, setBusy] = useState(false);
-  const [me, setMe] = useState<Awaited<ReturnType<typeof api.getMe>> | null>(
-    null,
-  );
+  const [me, setMe] = useState<api.Me | null>(null);
   const [rules, setRules] = useState<api.Rule[]>([]);
   const [captures, setCaptures] = useState<api.Capture[]>([]);
   const [newRuleType, setNewRuleType] = useState<api.Rule["type"]>(
@@ -602,6 +600,14 @@ export default function App() {
                 refresh on Important, or use a dev build for push.
               </Text>
             ) : null}
+            {me?.deviceTokenCount != null ? (
+              <Text style={styles.infoMuted}>
+                Push tokens on server: {me.deviceTokenCount}
+                {me.deviceTokenCount === 0
+                  ? " — tap Refresh push registration below."
+                  : ""}
+              </Text>
+            ) : null}
           </View>
           <Pressable style={styles.secondaryBtn} onPress={openGmail}>
             <Text style={styles.secondaryBtnText}>Open Gmail</Text>
@@ -613,6 +619,29 @@ export default function App() {
             }
           >
             <Text style={styles.secondaryBtnText}>Refresh push registration</Text>
+          </Pressable>
+          <Pressable
+            style={styles.secondaryBtn}
+            onPress={() => {
+              if (!token) return;
+              setBusy(true);
+              void api
+                .sendTestPush(token)
+                .then((r: { ok: boolean; deviceCount: number }) => {
+                  Alert.alert(
+                    "Test push sent",
+                    `Requested delivery to ${r.deviceCount} device token(s). Check notification shade in a few seconds.`,
+                  );
+                  void refreshAll();
+                })
+                .catch((e: unknown) => {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  Alert.alert("Test push failed", msg);
+                })
+                .finally(() => setBusy(false));
+            }}
+          >
+            <Text style={styles.secondaryBtnText}>Send test push</Text>
           </Pressable>
           <View style={styles.settingsSpacer} />
           <Pressable style={styles.linkBtn} onPress={signOut}>
@@ -847,6 +876,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
+  },
+  infoMuted: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
   },
   settingsSpacer: { height: 8 },
   dangerBtn: {

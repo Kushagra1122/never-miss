@@ -56,12 +56,21 @@ export async function registerDevice(token: string, expoPushToken: string) {
   });
 }
 
+export type Me = {
+  userId: string;
+  email: string | null;
+  lastSyncError: string | null;
+  deviceTokenCount: number;
+};
+
 export async function getMe(token: string) {
-  return req<{
-    userId: string;
-    email: string | null;
-    lastSyncError: string | null;
-  }>("/v1/me", token);
+  return req<Me>("/v1/me", token);
+}
+
+export async function sendTestPush(token: string) {
+  return req<{ ok: boolean; deviceCount: number }>("/v1/push/test", token, {
+    method: "POST",
+  });
 }
 
 export async function getRules(token: string) {

@@ -125,6 +125,12 @@ export async function syncAccount(accountId: string): Promise<void> {
             meta.snippet.slice(0, 120),
             { captureId: inserted[0]!.id },
           );
+        } else {
+          console.warn(
+            "[sync] new capture but no device_tokens for user",
+            acc.userId,
+            "— open app Account → Refresh push registration",
+          );
         }
 
         await db
