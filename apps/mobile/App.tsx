@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -38,8 +38,10 @@ import {
 WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = "nevermiss_session";
-/** Foreground poll for Important list + server-side Gmail sync cadence for the UI */
-const CAPTURE_POLL_MS = 30_000;
+/** While Important is open, ask the server to sync Gmail then refetch captures */
+const FEED_SYNC_POLL_MS = 12_000;
+/** Other tabs: light refetch only (no Gmail pull) */
+const IDLE_TAB_POLL_MS = 45_000;
 
 type Tab = "feed" | "rules" | "settings";
 
@@ -93,6 +95,7 @@ export default function App() {
   const [newRuleValue, setNewRuleValue] = useState("");
   const [connectEmailHint, setConnectEmailHint] = useState("");
   const [listRefreshing, setListRefreshing] = useState(false);
+  const pollSyncInFlight = useRef(false);
 
   const loadSession = useCallback(async () => {
     const t = await SecureStore.getItemAsync(TOKEN_KEY);
@@ -155,16 +158,39 @@ export default function App() {
     return () => sub.remove();
   }, [token, refreshAll]);
 
-  /** Periodic refresh while app is active (Expo Go Android: no remote push; polling fills the gap) */
+  /**
+   * Important tab: periodically POST /v1/sync then refetch — otherwise the UI only
+   * sees DB rows after the server cron (minutes) or manual pull-to-refresh.
+   * Other tabs: infrequent refetch only.
+   */
   useEffect(() => {
     if (!token) return;
+    const intervalMs = tab === "feed" ? FEED_SYNC_POLL_MS : IDLE_TAB_POLL_MS;
     const id = setInterval(() => {
-      if (AppState.currentState === "active") {
-        void refreshAll();
-      }
-    }, CAPTURE_POLL_MS);
+      if (AppState.currentState !== "active") return;
+      if (pollSyncInFlight.current) return;
+      pollSyncInFlight.current = true;
+      void (async () => {
+        try {
+          if (tab === "feed") {
+            await api.triggerSync(token).catch(() => {});
+          }
+          await refreshAll();
+        } finally {
+          pollSyncInFlight.current = false;
+        }
+      })();
+    }, intervalMs);
     return () => clearInterval(id);
-  }, [token, refreshAll]);
+  }, [token, refreshAll, tab]);
+
+  /** Entering Important: sync once so the list is not stale until the next interval tick */
+  useEffect(() => {
+    if (!token || tab !== "feed") return;
+    if (AppState.currentState !== "active") return;
+    void api.triggerSync(token).catch(() => {});
+    void refreshAll();
+  }, [token, tab, refreshAll]);
 
   const registerPush = useCallback(async (session: string) => {
     await registerExpoPushWithApi(session, api.registerDevice);
