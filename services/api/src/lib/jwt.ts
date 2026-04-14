@@ -64,26 +64,43 @@ export function verifySession(token: string): { userId: string } | null {
   return { userId: p.sub };
 }
 
-export function signOAuthState(nonce: string, expSec: number): string {
+export function signOAuthState(
+  nonce: string,
+  expSec: number,
+  appRedirect?: string,
+): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET must be set");
   const now = Math.floor(Date.now() / 1000);
-  return signPayload(
-    { nonce, iat: now, exp: now + expSec, typ: "oauth_state" },
-    secret,
-  );
+  const payload: Record<string, unknown> = {
+    nonce,
+    iat: now,
+    exp: now + expSec,
+    typ: "oauth_state",
+  };
+  if (appRedirect) payload.app_redirect = appRedirect;
+  return signPayload(payload, secret);
 }
 
-export function verifyOAuthState(token: string): { nonce: string } | null {
+export function verifyOAuthState(token: string): {
+  nonce: string;
+  appRedirect?: string;
+} | null {
   const secret = process.env.JWT_SECRET;
   if (!secret) return null;
-  const p = verifyToken<{ nonce?: string; exp?: number; typ?: string }>(
-    token,
-    secret,
-  );
+  const p = verifyToken<{
+    nonce?: string;
+    exp?: number;
+    typ?: string;
+    app_redirect?: string;
+  }>(token, secret);
   if (!p || p.typ !== "oauth_state" || typeof p.nonce !== "string")
     return null;
   const now = Math.floor(Date.now() / 1000);
   if (typeof p.exp !== "number" || p.exp < now) return null;
-  return { nonce: p.nonce };
+  const appRedirect =
+    typeof p.app_redirect === "string" && p.app_redirect.length > 0
+      ? p.app_redirect
+      : undefined;
+  return { nonce: p.nonce, appRedirect };
 }

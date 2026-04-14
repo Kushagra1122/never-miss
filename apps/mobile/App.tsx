@@ -124,11 +124,12 @@ export default function App() {
       });
       const apiUrl = getApiUrl();
       const hint = connectEmailHint.trim();
-      const qs =
-        hint.includes("@") && hint.length <= 254
-          ? `?login_hint=${encodeURIComponent(hint)}`
-          : "";
-      const authUrl = `${apiUrl}/auth/google${qs}`;
+      const params = new URLSearchParams();
+      params.set("redirect_uri", redirectUri);
+      if (hint.includes("@") && hint.length <= 254) {
+        params.set("login_hint", hint);
+      }
+      const authUrl = `${apiUrl}/auth/google?${params.toString()}`;
       const result = await WebBrowser.openAuthSessionAsync(
         authUrl,
         redirectUri,

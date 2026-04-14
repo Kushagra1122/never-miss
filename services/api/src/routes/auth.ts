@@ -29,6 +29,41 @@ function parseLoginHint(raw: unknown): string | undefined {
 }
 import { google } from "googleapis";
 
+/**
+ * Mobile clients pass this from AuthSession.makeRedirectUri — Expo Go uses exp://…
+ * instead of nevermiss://auth, so the final redirect must match or openAuthSessionAsync never completes.
+ */
+function isAllowedAppRedirect(raw: string): boolean {
+  const t = raw.trim();
+  if (!t || t.length > 2048) return false;
+  try {
+    const u = new URL(t);
+    const scheme = u.protocol.replace(/:$/, "").toLowerCase();
+    if (scheme === "nevermiss" && u.hostname === "auth") return true;
+    if (scheme === "exp" || scheme === "expo") return true;
+    if (scheme === "https" && u.hostname === "auth.expo.io") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function parseAppRedirectFromQuery(
+  q: Record<string, string | undefined>,
+): string | undefined {
+  const raw = q.redirect_uri?.trim();
+  if (!raw) return undefined;
+  return isAllowedAppRedirect(raw) ? raw : undefined;
+}
+
+function redirectToApp(baseUrl: string, params: Record<string, string>): string {
+  const u = new URL(baseUrl);
+  for (const [k, v] of Object.entries(params)) {
+    u.searchParams.set(k, v);
+  }
+  return u.toString();
+}
+
 async function resolveAccountEmail(
   tokens: Awaited<ReturnType<typeof exchangeCode>>,
 ): Promise<string> {
@@ -47,17 +82,21 @@ async function resolveAccountEmail(
   return email;
 }
 
-function deepLinkError(message: string): string {
-  const base = getMobileDeepLinkBase();
-  return `${base}?error=${encodeURIComponent(message)}`;
+function deepLinkError(message: string, appRedirect?: string): string {
+  const base =
+    appRedirect && isAllowedAppRedirect(appRedirect)
+      ? appRedirect.trim()
+      : getMobileDeepLinkBase();
+  return redirectToApp(base, { error: message });
 }
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
   app.get("/auth/google", async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const loginHint = parseLoginHint(q.login_hint);
+    const appRedirect = parseAppRedirectFromQuery(q);
     const nonce = crypto.randomBytes(16).toString("hex");
-    const state = signOAuthState(nonce, 600);
+    const state = signOAuthState(nonce, 600, appRedirect);
     const url = buildGoogleAuthUrl(state, { loginHint });
     return reply.redirect(url);
   });
@@ -68,14 +107,22 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const state = q.state;
     const err = q.error;
     if (err) {
-      return reply.redirect(deepLinkError(`google_${err}`));
+      const stEarly = state ? verifyOAuthState(state) : null;
+      return reply.redirect(
+        deepLinkError(`google_${err}`, stEarly?.appRedirect),
+      );
     }
-    if (!code || !state) {
+    if (!state) {
       return reply.redirect(deepLinkError("missing_code_or_state"));
     }
     const st = verifyOAuthState(state);
     if (!st) {
       return reply.redirect(deepLinkError("invalid_state"));
+    }
+    if (!code) {
+      return reply.redirect(
+        deepLinkError("missing_code_or_state", st.appRedirect),
+      );
     }
 
     try {
@@ -93,7 +140,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           .limit(1);
         if (!existing) {
           return reply.redirect(
-            deepLinkError("missing_refresh_reauthorize"),
+            deepLinkError("missing_refresh_reauthorize", st.appRedirect),
           );
         }
         refreshEnc = existing.refreshTokenEnc;
@@ -127,19 +174,23 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const session = signSession(userId, 60 * 60 * 24 * 30);
-      const redirect = `${getMobileDeepLinkBase()}?token=${encodeURIComponent(session)}`;
-      return reply.redirect(redirect);
+      const base =
+        st.appRedirect && isAllowedAppRedirect(st.appRedirect)
+          ? st.appRedirect.trim()
+          : getMobileDeepLinkBase();
+      return reply.redirect(redirectToApp(base, { token: session }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "oauth_failed";
-      return reply.redirect(deepLinkError(msg));
+      return reply.redirect(deepLinkError(msg, st.appRedirect));
     }
   });
 
   app.get("/auth/google/url", async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const loginHint = parseLoginHint(q.login_hint);
+    const appRedirect = parseAppRedirectFromQuery(q);
     const nonce = crypto.randomBytes(16).toString("hex");
-    const state = signOAuthState(nonce, 600);
+    const state = signOAuthState(nonce, 600, appRedirect);
     const url = buildGoogleAuthUrl(state, { loginHint });
     return { url, state };
   });
