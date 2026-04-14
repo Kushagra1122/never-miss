@@ -62,6 +62,7 @@ module.exports = ({ config }) => ({
     ],
   ],
   extra: {
-    apiUrl: process.env.EXPO_PUBLIC_API_URL ?? "http://127.0.0.1:3000",
+    apiUrl:
+      process.env.EXPO_PUBLIC_API_URL ?? "https://never-miss-api.onrender.com",
   },
 });
