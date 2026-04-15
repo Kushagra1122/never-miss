@@ -75,6 +75,24 @@ export function parseFromHeader(from: string): { email: string; domain: string }
   return { email: addr, domain };
 }
 
+/**
+ * Gmail treats dots in the local part as equivalent and ignores +tags.
+ * Use for sender_email rules so `you@gmail.com` matches From `y.o.u+lists@gmail.com`.
+ */
+export function gmailCanonicalAddress(addr: string): string {
+  const trimmed = addr.trim().toLowerCase();
+  const at = trimmed.lastIndexOf("@");
+  if (at < 0) return trimmed;
+  let local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  const plus = local.indexOf("+");
+  if (plus >= 0) local = local.slice(0, plus);
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    local = local.replace(/\./g, "");
+  }
+  return `${local}@${domain}`;
+}
+
 export function messageMatchesRule(
   fromHeader: string,
   labelIds: string[] | undefined,
@@ -84,7 +102,7 @@ export function messageMatchesRule(
   const { email, domain } = parseFromHeader(fromHeader);
   switch (rule.type) {
     case "sender_email":
-      return email === v;
+      return gmailCanonicalAddress(email) === gmailCanonicalAddress(v);
     case "domain":
       return domain === v || email.endsWith(`@${v}`);
     case "gmail_label_id":
@@ -184,7 +202,7 @@ export async function syncHistory(
 
 export async function listRecentMessageIds(
   refreshToken: string,
-  maxResults: number,
+  maxResults = 100,
 ): Promise<string[]> {
   const gmail = gmailClientForRefresh(refreshToken);
   // Do not require `in:inbox` — mail can land in Updates/Promotions or be matched late

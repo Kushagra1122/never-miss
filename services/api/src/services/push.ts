@@ -5,6 +5,15 @@ const expo = new Expo({ useFcmV1: true });
 /** Android channel id — client creates this in `notificationService.ensureAndroidMailChannel`. */
 export const EXPO_ANDROID_MAIL_CHANNEL_ID = "important-mail";
 
+export type ExpoPushSendResult = {
+  skippedInvalid: number;
+  messageCount: number;
+  ticketOk: number;
+  ticketErr: number;
+  /** Human-readable samples for clients / logs (deduped, capped). */
+  errorSamples: string[];
+};
+
 /** FCM / Expo expect string values in `data`. */
 function stringifyData(
   data?: Record<string, string>,
@@ -35,12 +44,27 @@ function logTicketErrors(tickets: ExpoPushTicket[]): void {
   }
 }
 
+function summarizeTicketErrors(tickets: ExpoPushTicket[], maxSamples: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tickets) {
+    if (t.status !== "error") continue;
+    const code = t.details?.error ?? "unknown";
+    const line = `${code}: ${t.message}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+    if (out.length >= maxSamples) break;
+  }
+  return out;
+}
+
 export async function sendExpoPush(
   tokens: string[],
   title: string,
   body: string,
   data?: Record<string, string>,
-): Promise<void> {
+): Promise<ExpoPushSendResult> {
   const payload = stringifyData(data);
   const messages: ExpoPushMessage[] = [];
   let skippedInvalid = 0;
@@ -78,7 +102,13 @@ export async function sendExpoPush(
         reason: "no_valid_expo_tokens_after_filter",
       }),
     );
-    return;
+    return {
+      skippedInvalid,
+      messageCount: 0,
+      ticketOk: 0,
+      ticketErr: 0,
+      errorSamples: [],
+    };
   }
 
   const chunks = expo.chunkPushNotifications(messages);
@@ -97,6 +127,8 @@ export async function sendExpoPush(
 
   let ticketOk = 0;
   let ticketErr = 0;
+  const allErrorSamples: string[] = [];
+
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     try {
@@ -113,6 +145,10 @@ export async function sendExpoPush(
         }
       }
       logTicketErrors(tickets);
+      for (const s of summarizeTicketErrors(tickets, 8)) {
+        if (!allErrorSamples.includes(s)) allErrorSamples.push(s);
+        if (allErrorSamples.length >= 8) break;
+      }
       console.log(
         "[NeverMiss/push] chunk_sent",
         JSON.stringify({
@@ -140,4 +176,12 @@ export async function sendExpoPush(
     "[NeverMiss/push] send_done",
     JSON.stringify({ ticketOk, ticketErr, chunks: chunks.length }),
   );
+
+  return {
+    skippedInvalid,
+    messageCount: messages.length,
+    ticketOk,
+    ticketErr,
+    errorSamples: allErrorSamples.slice(0, 8),
+  };
 }

@@ -67,8 +67,21 @@ export async function getMe(token: string) {
   return req<Me>("/v1/me", token);
 }
 
+export type TestPushDelivery = {
+  messageCount: number;
+  ticketOk: number;
+  ticketErr: number;
+  errorSamples: string[];
+};
+
+export type TestPushResponse = {
+  ok: true;
+  deviceCount: number;
+  delivery: TestPushDelivery;
+};
+
 export async function sendTestPush(token: string) {
-  return req<{ ok: boolean; deviceCount: number }>("/v1/push/test", token, {
+  return req<TestPushResponse>("/v1/push/test", token, {
     method: "POST",
   });
 }

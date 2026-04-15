@@ -97,12 +97,32 @@ export default function App() {
   /** Last push registration outcome (permission, Expo Go, FCM, or API error). */
   const [pushRegisterHint, setPushRegisterHint] = useState<string | null>(null);
   const [listRefreshing, setListRefreshing] = useState(false);
+  /** Shown on Important when POST /v1/sync fails (e.g. rate limit) — was previously silent. */
+  const [syncFailMessage, setSyncFailMessage] = useState<string | null>(null);
   const pollSyncInFlight = useRef(false);
+  /** Coalesce overlapping refreshAll (session + push + resume + tabs) into one triple-fetch. */
+  const refreshAllInFlight = useRef<Promise<void> | null>(null);
 
   const loadSession = useCallback(async () => {
     const t = await SecureStore.getItemAsync(TOKEN_KEY);
     setToken(t);
     setLoading(false);
+  }, []);
+
+  const syncGmailFromServer = useCallback(async (sessionToken: string) => {
+    try {
+      await api.triggerSync(sessionToken);
+      setSyncFailMessage(null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSyncFailMessage(
+        msg.includes("429")
+          ? "Gmail sync was rate-limited. Wait ~30s, then pull down on Important to retry."
+          : msg.includes("no_gmail_account")
+            ? "Connect Gmail (Google sign-in) before sync can run."
+            : `Gmail sync failed: ${msg.slice(0, 220)}`,
+      );
+    }
   }, []);
 
   useEffect(() => {
@@ -119,14 +139,23 @@ export default function App() {
 
   const refreshAll = useCallback(async () => {
     if (!token) return;
-    const [m, r, c] = await Promise.all([
-      api.getMe(token),
-      api.getRules(token),
-      api.getCaptures(token),
-    ]);
-    setMe(m);
-    setRules(r.rules);
-    setCaptures(c.captures);
+    if (refreshAllInFlight.current) return refreshAllInFlight.current;
+    const p = (async () => {
+      const [m, r, c] = await Promise.all([
+        api.getMe(token),
+        api.getRules(token),
+        api.getCaptures(token),
+      ]);
+      setMe(m);
+      setRules(r.rules);
+      setCaptures(c.captures);
+    })();
+    refreshAllInFlight.current = p;
+    try {
+      await p;
+    } finally {
+      if (refreshAllInFlight.current === p) refreshAllInFlight.current = null;
+    }
   }, [token]);
 
   useEffect(() => {
@@ -180,7 +209,7 @@ export default function App() {
       if (state !== "active") return;
       void (async () => {
         await refreshAll();
-        void api.triggerSync(token).catch(() => {});
+        void syncGmailFromServer(token);
         const r = await registerExpoPushWithApi(
           token,
           api.registerDevice,
@@ -194,7 +223,7 @@ export default function App() {
       })();
     });
     return () => sub.remove();
-  }, [token, refreshAll]);
+  }, [token, refreshAll, syncGmailFromServer]);
 
   /**
    * Important tab: periodically POST /v1/sync then refetch — otherwise the UI only
@@ -211,7 +240,7 @@ export default function App() {
       void (async () => {
         try {
           if (tab === "feed") {
-            await api.triggerSync(token).catch(() => {});
+            await syncGmailFromServer(token);
           }
           await refreshAll();
         } finally {
@@ -220,15 +249,15 @@ export default function App() {
       })();
     }, intervalMs);
     return () => clearInterval(id);
-  }, [token, refreshAll, tab]);
+  }, [token, refreshAll, tab, syncGmailFromServer]);
 
   /** Entering Important: sync once so the list is not stale until the next interval tick */
   useEffect(() => {
     if (!token || tab !== "feed") return;
     if (AppState.currentState !== "active") return;
-    void api.triggerSync(token).catch(() => {});
+    void syncGmailFromServer(token);
     void refreshAll();
-  }, [token, tab, refreshAll]);
+  }, [token, tab, refreshAll, syncGmailFromServer]);
 
   const registerPush = useCallback(
     (session: string, context: RegisterPushContext) =>
@@ -371,7 +400,7 @@ export default function App() {
       logOAuth("session_stored_ok", { tokenLength: t.length });
       const pushR = await registerPush(t, "sign_in");
       if (!pushR.ok) setPushRegisterHint(pushR.userMessage);
-      await api.triggerSync(t).catch(() => {});
+      await syncGmailFromServer(t);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logOAuth("session_throw", { message: msg });
@@ -389,6 +418,7 @@ export default function App() {
     setRules([]);
     setCaptures([]);
     setPushRegisterHint(null);
+    setSyncFailMessage(null);
   };
 
   const addRule = async () => {
@@ -400,7 +430,7 @@ export default function App() {
         value: newRuleValue.trim(),
       });
       setNewRuleValue("");
-      await api.triggerSync(token).catch(() => {});
+      await syncGmailFromServer(token);
       await refreshAll();
     } finally {
       setBusy(false);
@@ -505,11 +535,14 @@ export default function App() {
             onRefresh={() => {
               setListRefreshing(true);
               const p = refreshAll();
-              const s = token
-                ? api.triggerSync(token).catch(() => {})
-                : Promise.resolve();
+              const s = token ? syncGmailFromServer(token) : Promise.resolve();
               void Promise.all([p, s]).finally(() => setListRefreshing(false));
             }}
+            ListHeaderComponent={
+              syncFailMessage ? (
+                <Text style={[styles.warnBanner, styles.syncBanner]}>{syncFailMessage}</Text>
+              ) : null
+            }
             ListEmptyComponent={
               <Text style={styles.empty}>
                 Nothing yet. Add rules, pull down to refresh, or open Gmail from
@@ -542,7 +575,9 @@ export default function App() {
       {tab === "rules" && (
         <View style={styles.panel}>
           <Text style={styles.rulesIntro}>
-            Messages that match a rule appear under Important.
+            Messages that match a rule appear under Important after Gmail sync. Email rules
+            match the sender address in the From header (Gmail ignores dots and +tags in the
+            local part). Pull down on Important to sync sooner.
           </Text>
           <Text style={styles.label}>Match</Text>
           <View style={styles.row}>
@@ -683,13 +718,23 @@ export default function App() {
               notifInfo("test_push", "POST /v1/push/test …");
               void api
                 .sendTestPush(token)
-                .then((r: { ok: boolean; deviceCount: number }) => {
-                  notifInfo("test_push", "API accepted test push", {
+                .then((r) => {
+                  const { delivery } = r;
+                  notifInfo("test_push", "API finished test push", {
                     deviceCount: r.deviceCount,
+                    ticketOk: delivery.ticketOk,
+                    ticketErr: delivery.ticketErr,
                   });
+                  const errDetail =
+                    delivery.errorSamples.length > 0
+                      ? `\n\n${delivery.errorSamples.join("\n")}`
+                      : "";
+                  const okPart = `Stored tokens: ${r.deviceCount}. Expo accepted ${delivery.ticketOk} / ${delivery.messageCount} message(s); errors: ${delivery.ticketErr}.${errDetail}`;
                   Alert.alert(
-                    "Test push sent",
-                    `Requested delivery to ${r.deviceCount} device token(s). Check notification shade in a few seconds.`,
+                    delivery.ticketOk > 0
+                      ? "Test push sent"
+                      : "Test push not delivered",
+                    `${okPart}\n\nIf Expo shows ok but you still see nothing: check system notification settings, Focus mode, battery saver, and use a release APK (Expo Go on Android cannot receive FCM).`,
                   );
                   void refreshAll();
                 })
@@ -929,6 +974,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: "hidden",
   },
+  syncBanner: { marginBottom: 10 },
   infoBanner: {
     color: colors.textMuted,
     fontSize: 14,

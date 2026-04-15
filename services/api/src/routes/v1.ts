@@ -217,14 +217,35 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
       },
       "[NeverMiss/push] test_push_sending_to_expo",
     );
-    await sendExpoPush(uniq, "Never Miss", "Test notification — pipeline OK.", {
+    const delivery = await sendExpoPush(uniq, "Never Miss", "Test notification — pipeline OK.", {
       type: "test",
     });
     req.log.info(
-      { userId: req.userId, deviceCount: uniq.length },
+      {
+        userId: req.userId,
+        deviceCount: uniq.length,
+        delivery,
+      },
       "[NeverMiss/push] test_push_expo_send_returned",
     );
-    return { ok: true, deviceCount: uniq.length };
+    if (delivery.messageCount === 0) {
+      return reply.code(400).send({
+        error: "no_valid_expo_tokens",
+        message:
+          "Stored tokens are not valid Expo push tokens. Tap Refresh push registration after reinstalling the app.",
+        skippedInvalid: delivery.skippedInvalid,
+      });
+    }
+    return {
+      ok: true,
+      deviceCount: uniq.length,
+      delivery: {
+        messageCount: delivery.messageCount,
+        ticketOk: delivery.ticketOk,
+        ticketErr: delivery.ticketErr,
+        errorSamples: delivery.errorSamples,
+      },
+    };
   });
 
   app.delete("/account", async (req) => {

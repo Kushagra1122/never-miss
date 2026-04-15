@@ -35,9 +35,9 @@ export async function syncAccount(accountId: string): Promise<void> {
     const hist = await syncHistory(refreshToken, acc.historyId);
 
     if (!acc.historyId) {
-      messageIds = await listRecentMessageIds(refreshToken, 50);
+      messageIds = await listRecentMessageIds(refreshToken);
     } else if (hist.historyInvalid) {
-      messageIds = await listRecentMessageIds(refreshToken, 50);
+      messageIds = await listRecentMessageIds(refreshToken);
     } else {
       messageIds = hist.messageIds;
     }
@@ -49,7 +49,7 @@ export async function syncAccount(accountId: string): Promise<void> {
       acc.historyId &&
       !hist.historyInvalid
     ) {
-      const recent = await listRecentMessageIds(refreshToken, 50);
+      const recent = await listRecentMessageIds(refreshToken);
       messageIds = [...new Set([...messageIds, ...recent])];
     }
 
@@ -119,12 +119,22 @@ export async function syncAccount(accountId: string): Promise<void> {
 
         const uniq = [...new Set(tokens.map((x) => x.t))];
         if (uniq.length > 0) {
-          await sendExpoPush(
+          const pushResult = await sendExpoPush(
             uniq,
             meta.subject || "Important mail",
             meta.snippet.slice(0, 120),
             { captureId: inserted[0]!.id },
           );
+          if (pushResult.ticketErr > 0) {
+            console.warn(
+              "[NeverMiss/sync] push_expo_ticket_errors",
+              JSON.stringify({
+                userId: acc.userId,
+                captureId: inserted[0]!.id,
+                ...pushResult,
+              }),
+            );
+          }
         } else {
           console.warn(
             "[NeverMiss/sync] skip_push_no_device_tokens",

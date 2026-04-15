@@ -4,7 +4,7 @@ if (!process.env.API_PUBLIC_URL?.trim() && process.env.RENDER_EXTERNAL_URL) {
   process.env.API_PUBLIC_URL = process.env.RENDER_EXTERNAL_URL;
 }
 
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { authRoutes } from "./routes/auth.js";
@@ -22,6 +22,9 @@ async function main() {
 
   const app = Fastify({
     logger: true,
+    // Render (and other proxies) forward X-Forwarded-For; without this, req.ip is often
+    // 127.0.0.1 so every client shares one global rate-limit bucket and hits 429 quickly.
+    trustProxy: true,
   });
 
   await app.register(cors, {
@@ -30,8 +33,12 @@ async function main() {
 
   await app.register(rateLimit, {
     global: true,
-    max: Number(process.env.RATE_LIMIT_MAX) || 200,
+    max: Number(process.env.RATE_LIMIT_MAX) || 400,
     timeWindow: process.env.RATE_LIMIT_WINDOW_MS || "1 minute",
+    allowList: (request: FastifyRequest) => {
+      const path = request.url.split("?")[0] ?? "";
+      return path === "/health" || path === "/";
+    },
   });
 
   app.get("/", async () => ({
