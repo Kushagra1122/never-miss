@@ -29,6 +29,12 @@ const deviceBody = z.object({
   expoPushToken: z.string().min(10).max(512),
 });
 
+function redactExpoPushToken(token: string): string {
+  const n = token.length;
+  if (n <= 28) return `${token.slice(0, 12)}…(len=${n})`;
+  return `${token.slice(0, 22)}…${token.slice(-8)} (len=${n})`;
+}
+
 async function requireUser(
   authorization: string | undefined,
 ): Promise<string | null> {
@@ -67,6 +73,10 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   app.post("/devices", async (req, reply) => {
     const parsed = deviceBody.safeParse(req.body);
     if (!parsed.success) {
+      req.log.warn(
+        { err: parsed.error.flatten() },
+        "[NeverMiss/push] device_register_invalid_body",
+      );
       return reply.code(400).send({ error: "invalid_body" });
     }
     await db
@@ -78,6 +88,13 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
       .onConflictDoNothing({
         target: [deviceTokens.userId, deviceTokens.expoPushToken],
       });
+    req.log.info(
+      {
+        userId: req.userId,
+        expoPushToken: redactExpoPushToken(parsed.data.expoPushToken),
+      },
+      "[NeverMiss/push] device_register_upsert_ok (new or duplicate ignored)",
+    );
     return { ok: true };
   });
 
@@ -182,15 +199,31 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
       .where(eq(deviceTokens.userId, req.userId!));
     const uniq = [...new Set(rows.map((r) => r.t))];
     if (uniq.length === 0) {
+      req.log.warn(
+        { userId: req.userId, rowCount: rows.length },
+        "[NeverMiss/push] test_push_rejected_no_device_tokens",
+      );
       return reply.code(400).send({
         error: "no_device_tokens",
         message:
           "No Expo push token stored. In the app: Account → Refresh push registration.",
       });
     }
+    req.log.info(
+      {
+        userId: req.userId,
+        deviceCount: uniq.length,
+        tokensPreview: uniq.map((t) => redactExpoPushToken(t)),
+      },
+      "[NeverMiss/push] test_push_sending_to_expo",
+    );
     await sendExpoPush(uniq, "Never Miss", "Test notification — pipeline OK.", {
       type: "test",
     });
+    req.log.info(
+      { userId: req.userId, deviceCount: uniq.length },
+      "[NeverMiss/push] test_push_expo_send_returned",
+    );
     return { ok: true, deviceCount: uniq.length };
   });
 

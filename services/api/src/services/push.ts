@@ -22,12 +22,14 @@ function logTicketErrors(tickets: ExpoPushTicket[]): void {
     if (t.status === "error") {
       const err = t.details?.error;
       console.warn(
-        "[push] expo ticket error:",
-        t.message,
-        err ? `(${err})` : "",
-        t.details?.expoPushToken
-          ? `token=${t.details.expoPushToken.slice(0, 24)}…`
-          : "",
+        "[NeverMiss/push] expo_ticket_error",
+        JSON.stringify({
+          message: t.message,
+          errorCode: err ?? null,
+          tokenPrefix: t.details?.expoPushToken
+            ? `${t.details.expoPushToken.slice(0, 24)}…`
+            : null,
+        }),
       );
     }
   }
@@ -60,26 +62,82 @@ export async function sendExpoPush(
 
   if (skippedInvalid > 0) {
     console.warn(
-      "[push] skipped",
-      skippedInvalid,
-      "non-Expo token(s); DB may contain bad rows or stale installs",
+      "[NeverMiss/push] skipped_invalid_tokens",
+      JSON.stringify({
+        count: skippedInvalid,
+        hint: "DB may contain bad rows or stale installs",
+      }),
     );
   }
   if (messages.length === 0) {
-    console.warn("[push] no valid Expo push tokens; nothing sent");
+    console.warn(
+      "[NeverMiss/push] nothing_to_send",
+      JSON.stringify({
+        inputTokenRows: tokens.length,
+        skippedInvalid,
+        reason: "no_valid_expo_tokens_after_filter",
+      }),
+    );
     return;
   }
 
   const chunks = expo.chunkPushNotifications(messages);
-  for (const chunk of chunks) {
+  console.log(
+    "[NeverMiss/push] send_start",
+    JSON.stringify({
+      inputTokenRows: tokens.length,
+      skippedInvalid,
+      validMessages: messages.length,
+      chunkCount: chunks.length,
+      titleLen: (title || "Important mail").length,
+      bodyLen: (body || " ").length,
+      hasData: Boolean(payload && Object.keys(payload).length),
+    }),
+  );
+
+  let ticketOk = 0;
+  let ticketErr = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
     try {
       const tickets = await expo.sendPushNotificationsAsync(chunk);
+      let chunkOk = 0;
+      let chunkErr = 0;
+      for (const t of tickets) {
+        if (t.status === "ok") {
+          chunkOk++;
+          ticketOk++;
+        } else {
+          chunkErr++;
+          ticketErr++;
+        }
+      }
       logTicketErrors(tickets);
+      console.log(
+        "[NeverMiss/push] chunk_sent",
+        JSON.stringify({
+          chunkIndex: i + 1,
+          of: chunks.length,
+          batchSize: chunk.length,
+          chunkOk,
+          chunkErr,
+          cumulativeOk: ticketOk,
+          cumulativeErr: ticketErr,
+        }),
+      );
     } catch (e) {
       console.warn(
-        "[push] sendPushNotificationsAsync failed:",
-        e instanceof Error ? e.message : String(e),
+        "[NeverMiss/push] chunk_failed",
+        JSON.stringify({
+          chunkIndex: i + 1,
+          of: chunks.length,
+          error: e instanceof Error ? e.message : String(e),
+        }),
       );
     }
   }
+  console.log(
+    "[NeverMiss/push] send_done",
+    JSON.stringify({ ticketOk, ticketErr, chunks: chunks.length }),
+  );
 }

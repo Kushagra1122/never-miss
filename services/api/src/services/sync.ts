@@ -127,9 +127,12 @@ export async function syncAccount(accountId: string): Promise<void> {
           );
         } else {
           console.warn(
-            "[sync] new capture but no device_tokens for user",
-            acc.userId,
-            "— open app Account → Refresh push registration",
+            "[NeverMiss/sync] skip_push_no_device_tokens",
+            JSON.stringify({
+              userId: acc.userId,
+              captureId: inserted[0]!.id,
+              hint: "App must POST /v1/devices (Account → Refresh push registration)",
+            }),
           );
         }
 

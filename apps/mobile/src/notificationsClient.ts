@@ -9,4 +9,7 @@ export {
   shouldSkipExpoNotificationsModule,
   subscribeMailNotifications,
 } from "./notificationService";
-export type { MailNotificationHandlers } from "./notificationService";
+export type {
+  MailNotificationHandlers,
+  RegisterPushContext,
+} from "./notificationService";

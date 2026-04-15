@@ -28,9 +28,11 @@ import {
   waitForOAuthDeepLink,
 } from "./src/oauthRedirect";
 import * as api from "./src/api";
+import { notifInfo, notifWarn } from "./src/notificationsLog";
 import {
   initNotificationHandler,
   registerExpoPushWithApi,
+  type RegisterPushContext,
   shouldSkipExpoNotificationsModule,
   subscribeMailNotifications,
 } from "./src/notificationService";
@@ -92,6 +94,8 @@ export default function App() {
   );
   const [newRuleValue, setNewRuleValue] = useState("");
   const [connectEmailHint, setConnectEmailHint] = useState("");
+  /** Last push registration outcome (permission, Expo Go, FCM, or API error). */
+  const [pushRegisterHint, setPushRegisterHint] = useState<string | null>(null);
   const [listRefreshing, setListRefreshing] = useState(false);
   const pollSyncInFlight = useRef(false);
 
@@ -106,7 +110,11 @@ export default function App() {
   }, [loadSession]);
 
   useEffect(() => {
-    initNotificationHandler().catch(() => {});
+    initNotificationHandler().catch((e: unknown) => {
+      notifWarn("init", "initNotificationHandler threw", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    });
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -132,9 +140,20 @@ export default function App() {
    * and sync logs: "new capture but no device_tokens".
    */
   useEffect(() => {
-    if (!token) return;
-    void registerExpoPushWithApi(token, api.registerDevice);
-  }, [token]);
+    if (!token) {
+      setPushRegisterHint(null);
+      return;
+    }
+    void registerExpoPushWithApi(token, api.registerDevice, "session").then(
+      (r) => {
+        if (!r.ok) setPushRegisterHint(r.userMessage);
+        else {
+          setPushRegisterHint(null);
+          void refreshAll();
+        }
+      },
+    );
+  }, [token, refreshAll]);
 
   /** Push taps + foreground pushes refresh Important without manual pull */
   useEffect(() => {
@@ -158,10 +177,21 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") {
-        void refreshAll();
+      if (state !== "active") return;
+      void (async () => {
+        await refreshAll();
         void api.triggerSync(token).catch(() => {});
-      }
+        const r = await registerExpoPushWithApi(
+          token,
+          api.registerDevice,
+          "app_resume",
+        );
+        if (!r.ok) setPushRegisterHint(r.userMessage);
+        else {
+          setPushRegisterHint(null);
+          await refreshAll();
+        }
+      })();
     });
     return () => sub.remove();
   }, [token, refreshAll]);
@@ -200,9 +230,11 @@ export default function App() {
     void refreshAll();
   }, [token, tab, refreshAll]);
 
-  const registerPush = useCallback(async (session: string) => {
-    await registerExpoPushWithApi(session, api.registerDevice);
-  }, []);
+  const registerPush = useCallback(
+    (session: string, context: RegisterPushContext) =>
+      registerExpoPushWithApi(session, api.registerDevice, context),
+    [],
+  );
 
   const signIn = async () => {
     setBusy(true);
@@ -337,7 +369,8 @@ export default function App() {
       setToken(t);
       setConnectEmailHint("");
       logOAuth("session_stored_ok", { tokenLength: t.length });
-      await registerPush(t);
+      const pushR = await registerPush(t, "sign_in");
+      if (!pushR.ok) setPushRegisterHint(pushR.userMessage);
       await api.triggerSync(t).catch(() => {});
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -355,6 +388,7 @@ export default function App() {
     setMe(null);
     setRules([]);
     setCaptures([]);
+    setPushRegisterHint(null);
   };
 
   const addRule = async () => {
@@ -606,9 +640,11 @@ export default function App() {
             ) : null}
             {shouldSkipExpoNotificationsModule() ? (
               <Text style={styles.infoBanner}>
-                Remote push is not available in Expo Go on this device. Pull to
-                refresh on Important, or use a dev build for push.
+                Remote push is not available in Expo Go on Android. Install your
+                EAS preview APK to register a token and receive pushes.
               </Text>
+            ) : pushRegisterHint ? (
+              <Text style={styles.warnBanner}>{pushRegisterHint}</Text>
             ) : null}
             {me?.deviceTokenCount != null ? (
               <Text style={styles.infoMuted}>
@@ -624,9 +660,18 @@ export default function App() {
           </Pressable>
           <Pressable
             style={styles.secondaryBtn}
-            onPress={() =>
-              token && registerPush(token).catch(() => {})
-            }
+            onPress={() => {
+              if (!token) return;
+              void registerPush(token, "manual").then((r) => {
+                if (!r.ok) {
+                  Alert.alert("Push registration", r.userMessage);
+                  setPushRegisterHint(r.userMessage);
+                } else {
+                  setPushRegisterHint(null);
+                  void refreshAll();
+                }
+              });
+            }}
           >
             <Text style={styles.secondaryBtnText}>Refresh push registration</Text>
           </Pressable>
@@ -635,9 +680,13 @@ export default function App() {
             onPress={() => {
               if (!token) return;
               setBusy(true);
+              notifInfo("test_push", "POST /v1/push/test …");
               void api
                 .sendTestPush(token)
                 .then((r: { ok: boolean; deviceCount: number }) => {
+                  notifInfo("test_push", "API accepted test push", {
+                    deviceCount: r.deviceCount,
+                  });
                   Alert.alert(
                     "Test push sent",
                     `Requested delivery to ${r.deviceCount} device token(s). Check notification shade in a few seconds.`,
@@ -646,6 +695,9 @@ export default function App() {
                 })
                 .catch((e: unknown) => {
                   const msg = e instanceof Error ? e.message : String(e);
+                  notifWarn("test_push", "API rejected or network error", {
+                    message: msg,
+                  });
                   Alert.alert("Test push failed", msg);
                 })
                 .finally(() => setBusy(false));
