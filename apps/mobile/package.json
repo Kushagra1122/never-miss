@@ -11,7 +11,8 @@
     "ios:run": "expo run:ios",
     "android:apk": "bash ./scripts/android-release-apk.sh",
     "build:apk": "eas build -p android --profile preview",
-    "build:apk:local": "eas build -p android --profile preview --local"
+    "build:apk:local": "eas build -p android --profile preview --local",
+    "android:sync-firebase": "node ./scripts/sync-google-services-android.js"
   },
   "dependencies": {
     "expo": "~54.0.0",

@@ -27,17 +27,30 @@ function loadEnvFile(filePath, override) {
 loadEnvFile(path.join(__dirname, "../../.env"), false);
 loadEnvFile(path.join(__dirname, ".env"), true);
 
-/** Prefer apps/mobile; else monorepo root (never-miss/google-services.json). */
-const googleServicesCandidates = [
-  path.join(__dirname, "google-services.json"),
-  path.join(__dirname, "..", "..", "google-services.json"),
-];
-const googleServicesJson = googleServicesCandidates.find((p) =>
-  fs.existsSync(p),
-);
-const googleServicesFile = googleServicesJson
-  ? path.relative(__dirname, googleServicesJson).split(path.sep).join("/")
-  : null;
+/**
+ * Firebase client config for Android FCM (Expo push). Sources, in order:
+ * 1. EAS "File" env var `GOOGLE_SERVICES_JSON` → absolute path to the JSON on the builder
+ * 2. apps/mobile/google-services.json
+ * 3. repo root google-services.json
+ *
+ * If the file is gitignored, add an EAS secret (File) named GOOGLE_SERVICES_JSON for your
+ * build profile so cloud builds receive it.
+ */
+function resolveGoogleServicesFileForExpo() {
+  const fromEas = process.env.GOOGLE_SERVICES_JSON?.trim();
+  if (fromEas && fs.existsSync(fromEas)) {
+    return fromEas;
+  }
+  const candidates = [
+    path.join(__dirname, "google-services.json"),
+    path.join(__dirname, "..", "..", "google-services.json"),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) return null;
+  return path.relative(__dirname, found).split(path.sep).join("/");
+}
+
+const googleServicesFile = resolveGoogleServicesFileForExpo();
 
 module.exports = ({ config }) => ({
   ...config,

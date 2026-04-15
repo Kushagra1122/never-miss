@@ -6,4 +6,5 @@ dist/
 .env.local
 .DS_Store
 google-services.json
+apps/mobile/android/app/google-services.json
 mini-proj-493312-e02077145755.json

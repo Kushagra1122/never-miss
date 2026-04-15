@@ -8,12 +8,14 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
-      }
+      },
+      "prebuildCommand": "node ./scripts/sync-google-services-android.js"
     },
     "production": {
       "android": {
         "buildType": "app-bundle"
-      }
+      },
+      "prebuildCommand": "node ./scripts/sync-google-services-android.js"
     }
   },
   "submit": {

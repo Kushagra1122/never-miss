@@ -180,3 +180,10 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Firebase / FCM (Expo getExpoPushTokenAsync on Android). Only apply when the file exists
+// so local builds without secrets still compile.
+def googleServicesJson = file("google-services.json")
+if (googleServicesJson.exists()) {
+    apply plugin: "com.google.gms.google-services"
+}

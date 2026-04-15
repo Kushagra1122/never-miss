@@ -127,6 +127,21 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Shorter UI copy when native Firebase was never wired for this APK. */
+function pushFailureUserMessage(raw: string): string {
+  if (
+    raw.includes("FirebaseApp is not initialized") ||
+    raw.includes("FirebaseApp.initializeApp")
+  ) {
+    return (
+      "Firebase is not set up in this Android build (missing google-services.json processing). " +
+      "Rebuild after: (1) npm run android:sync-firebase locally, or (2) EAS secret GOOGLE_SERVICES_JSON (File) + new APK. " +
+      "See https://docs.expo.dev/push-notifications/fcm-credentials/"
+    );
+  }
+  return `Could not register with the server: ${raw}`;
+}
+
 /**
  * Registers this device’s Expo push token with the API. Failures are non-throwing
  * so sign-in is not blocked; callers can show `userMessage` on Account.
@@ -192,7 +207,7 @@ export async function registerExpoPushWithApi(
     notifWarn("register_error", detail, { context });
     return {
       ok: false,
-      userMessage: `Could not register with the server: ${detail}`,
+      userMessage: pushFailureUserMessage(detail),
     };
   }
 }
