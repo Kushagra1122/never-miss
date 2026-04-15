@@ -8,6 +8,13 @@
       "when": 1730000000000,
       "tag": "0000_initial",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1730000001000,
+      "tag": "0001_device_tokens_user_expo_uniq",
+      "breakpoints": true
     }
   ]
 }

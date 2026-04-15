@@ -126,6 +126,16 @@ export default function App() {
     refreshAll().catch(() => {});
   }, [token, refreshAll]);
 
+  /**
+   * Register push token whenever a session exists (including cold start from SecureStore).
+   * Without this, users who never tapped "Refresh push registration" have zero device_tokens
+   * and sync logs: "new capture but no device_tokens".
+   */
+  useEffect(() => {
+    if (!token) return;
+    void registerExpoPushWithApi(token, api.registerDevice);
+  }, [token]);
+
   /** Push taps + foreground pushes refresh Important without manual pull */
   useEffect(() => {
     if (!token) return;

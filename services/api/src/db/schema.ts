@@ -81,16 +81,25 @@ export const capturedMessages = pgTable(
   }),
 );
 
-export const deviceTokens = pgTable("device_tokens", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  expoPushToken: text("expo_push_token").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-});
+export const deviceTokens = pgTable(
+  "device_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    expoPushToken: text("expo_push_token").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    userTokenUniq: uniqueIndex("device_tokens_user_expo_token").on(
+      t.userId,
+      t.expoPushToken,
+    ),
+  }),
+);
 
 export type User = typeof users.$inferSelect;
 export type GoogleAccount = typeof googleAccounts.$inferSelect;

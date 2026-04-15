@@ -69,10 +69,15 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
-    await db.insert(deviceTokens).values({
-      userId: req.userId!,
-      expoPushToken: parsed.data.expoPushToken,
-    });
+    await db
+      .insert(deviceTokens)
+      .values({
+        userId: req.userId!,
+        expoPushToken: parsed.data.expoPushToken,
+      })
+      .onConflictDoNothing({
+        target: [deviceTokens.userId, deviceTokens.expoPushToken],
+      });
     return { ok: true };
   });
 
