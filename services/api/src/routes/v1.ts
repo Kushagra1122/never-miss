@@ -217,9 +217,13 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
       },
       "[NeverMiss/push] test_push_sending_to_expo",
     );
-    const delivery = await sendExpoPush(uniq, "Never Miss", "Test notification — pipeline OK.", {
-      type: "test",
-    });
+    const delivery = await sendExpoPush(
+      uniq,
+      "Never Miss",
+      "Test notification — pipeline OK.",
+      { type: "test" },
+      { receiptProbeMs: 3000 },
+    );
     req.log.info(
       {
         userId: req.userId,
@@ -244,6 +248,7 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
         ticketOk: delivery.ticketOk,
         ticketErr: delivery.ticketErr,
         errorSamples: delivery.errorSamples,
+        ...(delivery.receiptProbe ? { receiptProbe: delivery.receiptProbe } : {}),
       },
     };
   });

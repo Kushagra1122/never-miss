@@ -67,11 +67,21 @@ export async function getMe(token: string) {
   return req<Me>("/v1/me", token);
 }
 
+export type TestPushReceiptProbe = {
+  waitedMs: number;
+  receiptOk: number;
+  receiptErr: number;
+  pendingCount: number;
+  errors: string[];
+};
+
 export type TestPushDelivery = {
   messageCount: number;
   ticketOk: number;
   ticketErr: number;
   errorSamples: string[];
+  /** Present after server waits ~3s and asks Expo for FCM/APNs receipts (real delivery layer). */
+  receiptProbe?: TestPushReceiptProbe;
 };
 
 export type TestPushResponse = {

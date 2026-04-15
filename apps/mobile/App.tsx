@@ -720,21 +720,39 @@ export default function App() {
                 .sendTestPush(token)
                 .then((r) => {
                   const { delivery } = r;
+                  const rp = delivery.receiptProbe;
                   notifInfo("test_push", "API finished test push", {
                     deviceCount: r.deviceCount,
                     ticketOk: delivery.ticketOk,
                     ticketErr: delivery.ticketErr,
+                    receiptErr: rp?.receiptErr,
                   });
-                  const errDetail =
+                  const ticketErrDetail =
                     delivery.errorSamples.length > 0
-                      ? `\n\n${delivery.errorSamples.join("\n")}`
+                      ? `\n\nTickets: ${delivery.errorSamples.join("\n")}`
                       : "";
-                  const okPart = `Stored tokens: ${r.deviceCount}. Expo accepted ${delivery.ticketOk} / ${delivery.messageCount} message(s); errors: ${delivery.ticketErr}.${errDetail}`;
+                  const receiptErrDetail =
+                    rp && rp.errors.length > 0
+                      ? `\n\nFCM/APNs (receipts): ${rp.errors.join("\n")}`
+                      : rp && rp.receiptErr === 0 && rp.receiptOk > 0
+                        ? "\n\nFCM handoff: receipts OK (device may still suppress in settings/Doze)."
+                        : rp && rp.pendingCount > 0
+                          ? `\n\nReceipts pending: ${rp.pendingCount} (Expo may need a minute; check Expo Push dashboard).`
+                          : "";
+                  const okPart = `Stored tokens: ${r.deviceCount}. Expo tickets: ${delivery.ticketOk} ok / ${delivery.messageCount} sent, ${delivery.ticketErr} err.${ticketErrDetail}${receiptErrDetail}`;
+                  const fcmMismatchHint =
+                    rp?.errors.some((e) =>
+                      /MismatchSenderId|InvalidCredentials|FCM/i.test(e),
+                    ) ?? false
+                      ? "\n\nFix: In https://expo.dev → never-miss → Credentials, upload FCM V1 key from the **same** Firebase project as `google-services.json` in your EAS build (sender ID must match). Then rebuild the Android app."
+                      : "";
                   Alert.alert(
-                    delivery.ticketOk > 0
-                      ? "Test push sent"
-                      : "Test push not delivered",
-                    `${okPart}\n\nIf Expo shows ok but you still see nothing: check system notification settings, Focus mode, battery saver, and use a release APK (Expo Go on Android cannot receive FCM).`,
+                    rp && rp.receiptErr > 0
+                      ? "Push blocked at FCM"
+                      : delivery.ticketOk > 0
+                        ? "Test push — see details"
+                        : "Test push not delivered",
+                    `${okPart}${fcmMismatchHint}\n\nTickets only mean Expo queued the message; receipts show whether Google/Apple accepted it.`,
                   );
                   void refreshAll();
                 })
