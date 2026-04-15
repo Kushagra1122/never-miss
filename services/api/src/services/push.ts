@@ -5,10 +5,18 @@ import {
   type ExpoPushTicket,
 } from "expo-server-sdk";
 
-const expo = new Expo({ useFcmV1: true });
+/** Expo Push defaults to FCM HTTP v1; in expo-server-sdk@3.13 only `useFcmV1: false` alters the send URL. */
+const expo = new Expo();
 
 /** Android channel id — client creates this in `notificationService.ensureAndroidMailChannel`. */
 export const EXPO_ANDROID_MAIL_CHANNEL_ID = "important-mail";
+
+/** Subset of Expo receipt `details.fcm` (when present) — helps distinguish credential vs payload issues. */
+export type ExpoReceiptFcmDiagnostic = {
+  httpStatus?: number;
+  /** Truncated plain text / HTML snippet from FCM (no tokens). */
+  responsePreview?: string;
+};
 
 export type ExpoPushReceiptProbe = {
   waitedMs: number;
@@ -16,6 +24,7 @@ export type ExpoPushReceiptProbe = {
   receiptErr: number;
   pendingCount: number;
   errors: string[];
+  fcmDiagnostics?: ExpoReceiptFcmDiagnostic[];
 };
 
 export type ExpoPushSendResult = {
@@ -95,6 +104,26 @@ function receiptErrorLine(r: ExpoPushReceipt): string {
   return `${code}: ${r.message}`;
 }
 
+function extractFcmDiagnostic(details: unknown): ExpoReceiptFcmDiagnostic | null {
+  if (!details || typeof details !== "object") return null;
+  const d = details as Record<string, unknown>;
+  const fcm = d.fcm;
+  if (!fcm || typeof fcm !== "object") return null;
+  const f = fcm as Record<string, unknown>;
+  const httpStatus = typeof f.httpStatus === "number" ? f.httpStatus : undefined;
+  const raw = typeof f.response === "string" ? f.response : "";
+  const responsePreview =
+    raw.length > 0
+      ? raw.replace(/\s+/g, " ").trim().slice(0, 200)
+      : undefined;
+  if (httpStatus == null && !responsePreview) return null;
+  return { httpStatus, responsePreview };
+}
+
+function fcmDiagnosticKey(x: ExpoReceiptFcmDiagnostic): string {
+  return `${x.httpStatus ?? ""}|${x.responsePreview ?? ""}`;
+}
+
 async function probePushReceipts(
   okTicketIds: string[],
   waitMs: number,
@@ -107,6 +136,8 @@ async function probePushReceipts(
   let receiptErr = 0;
   let pendingCount = 0;
   const errors: string[] = [];
+  const fcmSeen = new Set<string>();
+  const fcmDiagnostics: ExpoReceiptFcmDiagnostic[] = [];
   const chunks = expo.chunkPushNotificationReceiptIds(okTicketIds);
   for (const chunk of chunks) {
     try {
@@ -123,6 +154,15 @@ async function probePushReceipts(
           receiptErr++;
           const line = receiptErrorLine(r);
           if (!errors.includes(line)) errors.push(line);
+          const diag =
+            r.status === "error" ? extractFcmDiagnostic(r.details) : null;
+          if (diag) {
+            const k = fcmDiagnosticKey(diag);
+            if (!fcmSeen.has(k) && fcmDiagnostics.length < 5) {
+              fcmSeen.add(k);
+              fcmDiagnostics.push(diag);
+            }
+          }
         }
       }
     } catch (e) {
@@ -132,13 +172,15 @@ async function probePushReceipts(
       );
     }
   }
-  return {
+  const probe: ExpoPushReceiptProbe = {
     waitedMs: waitMs,
     receiptOk,
     receiptErr,
     pendingCount,
     errors: errors.slice(0, 10),
   };
+  if (fcmDiagnostics.length > 0) probe.fcmDiagnostics = fcmDiagnostics;
+  return probe;
 }
 
 export async function sendExpoPush(
@@ -275,13 +317,17 @@ export async function sendExpoPush(
     const okIds = allTickets.filter((t) => t.status === "ok").map((t) => t.id);
     const receiptProbe = await probePushReceipts(okIds, probeMs);
     base.receiptProbe = receiptProbe;
+    const fcm404 =
+      receiptProbe.fcmDiagnostics?.some((x) => x.httpStatus === 404) ?? false;
     console.log(
       "[NeverMiss/push] receipt_probe",
       JSON.stringify({
         ...receiptProbe,
         hint:
           receiptProbe.receiptErr > 0
-            ? "Fix FCM: Expo dashboard credentials must match google-services.json (same Firebase project / sender)."
+            ? fcm404
+              ? "FCM returned HTTP 404 for Expo→FCM (common: wrong FCM V1 service account in expo.dev credentials vs Firebase project in google-services.json)."
+              : "Fix FCM: Expo dashboard credentials must match google-services.json (same Firebase project / sender)."
             : receiptProbe.pendingCount > 0
               ? "Some receipts not ready yet; retry getReceipts later per Expo docs."
               : "FCM/APNs accepted handoff from Expo.",

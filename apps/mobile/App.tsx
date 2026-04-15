@@ -731,20 +731,36 @@ export default function App() {
                     delivery.errorSamples.length > 0
                       ? `\n\nTickets: ${delivery.errorSamples.join("\n")}`
                       : "";
+                  const fcmDiagLines =
+                    rp?.fcmDiagnostics?.map((x) => {
+                      const bits: string[] = [];
+                      if (x.httpStatus != null) bits.push(`HTTP ${x.httpStatus}`);
+                      if (x.responsePreview) bits.push(x.responsePreview.slice(0, 120));
+                      return bits.join(" — ") || "(no FCM detail)";
+                    }) ?? [];
                   const receiptErrDetail =
                     rp && rp.errors.length > 0
-                      ? `\n\nFCM/APNs (receipts): ${rp.errors.join("\n")}`
+                      ? `\n\nFCM/APNs (receipts): ${rp.errors.join("\n")}${
+                          fcmDiagLines.length
+                            ? `\n\nFCM raw: ${fcmDiagLines.join(" | ")}`
+                            : ""
+                        }`
                       : rp && rp.receiptErr === 0 && rp.receiptOk > 0
                         ? "\n\nFCM handoff: receipts OK (device may still suppress in settings/Doze)."
                         : rp && rp.pendingCount > 0
                           ? `\n\nReceipts pending: ${rp.pendingCount} (Expo may need a minute; check Expo Push dashboard).`
                           : "";
                   const okPart = `Stored tokens: ${r.deviceCount}. Expo tickets: ${delivery.ticketOk} ok / ${delivery.messageCount} sent, ${delivery.ticketErr} err.${ticketErrDetail}${receiptErrDetail}`;
+                  const fcm404 =
+                    rp?.fcmDiagnostics?.some((x) => x.httpStatus === 404) ?? false;
                   const fcmMismatchHint =
-                    rp?.errors.some((e) =>
-                      /MismatchSenderId|InvalidCredentials|FCM/i.test(e),
-                    ) ?? false
-                      ? "\n\nFix: In https://expo.dev → never-miss → Credentials, upload FCM V1 key from the **same** Firebase project as `google-services.json` in your EAS build (sender ID must match). Then rebuild the Android app."
+                    (rp?.receiptErr ?? 0) > 0 &&
+                    (fcm404 ||
+                      (rp?.errors.some((e) =>
+                        /MismatchSenderId|InvalidCredentials|DeveloperError|FCM/i.test(e),
+                      ) ??
+                        false))
+                      ? `\n\nFix: https://expo.dev → never-miss → Credentials → FCM V1 service account must be from the **same** Firebase project as \`google-services.json\` / \`GOOGLE_SERVICES_JSON\` used for this Android build (package com.nevermiss.app). HTTP 404 here usually means Expo cannot reach your FCM project with the uploaded key. Re-upload the JSON key, then create a new EAS Android build.`
                       : "";
                   Alert.alert(
                     rp && rp.receiptErr > 0

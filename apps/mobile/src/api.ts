@@ -67,12 +67,18 @@ export async function getMe(token: string) {
   return req<Me>("/v1/me", token);
 }
 
+export type TestPushReceiptFcmDiagnostic = {
+  httpStatus?: number;
+  responsePreview?: string;
+};
+
 export type TestPushReceiptProbe = {
   waitedMs: number;
   receiptOk: number;
   receiptErr: number;
   pendingCount: number;
   errors: string[];
+  fcmDiagnostics?: TestPushReceiptFcmDiagnostic[];
 };
 
 export type TestPushDelivery = {
