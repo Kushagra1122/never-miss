@@ -8,6 +8,7 @@ import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { authRoutes } from "./routes/auth.js";
+import { internalRoutes } from "./routes/internal.js";
 import { v1Routes } from "./routes/v1.js";
 import { getPollIntervalMs } from "./lib/config.js";
 import { syncAllAccounts } from "./services/sync.js";
@@ -37,17 +38,22 @@ async function main() {
     timeWindow: process.env.RATE_LIMIT_WINDOW_MS || "1 minute",
     allowList: (request: FastifyRequest) => {
       const path = request.url.split("?")[0] ?? "";
-      return path === "/health" || path === "/";
+      return (
+        path === "/health" ||
+        path === "/" ||
+        path === "/internal/sync-all"
+      );
     },
   });
 
   app.get("/", async () => ({
     ok: true,
     service: "never-miss-api",
-    docs: "Use GET /health for a health check; API routes are under /auth and /v1.",
+    docs: "GET /health; routes under /auth, /v1; optional POST /internal/sync-all (CRON_SECRET) for scheduled Gmail sync.",
   }));
 
   await app.register(authRoutes);
+  await app.register(internalRoutes, { prefix: "/internal" });
   await app.register(v1Routes, { prefix: "/v1" });
 
   const intervalMs = getPollIntervalMs();

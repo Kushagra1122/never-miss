@@ -127,6 +127,52 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function isRetryableExpoPushTokenError(message: string): boolean {
+  return (
+    message.includes("SERVICE_NOT_AVAILABLE") ||
+    message.includes("NETWORK_ERROR") ||
+    message.includes("Unable to resolve host") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT")
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** FCM sometimes returns SERVICE_NOT_AVAILABLE; brief backoff can succeed. */
+async function getExpoPushTokenWithRetries(
+  getToken: () => Promise<{ data: string }>,
+  context: RegisterPushContext,
+): Promise<{ data: string }> {
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      const delayMs = attempt === 1 ? 2500 : 5000;
+      notifWarn("register_expo_token_retry", "retrying getExpoPushTokenAsync", {
+        context,
+        attempt,
+        delayMs,
+      });
+      await sleep(delayMs);
+    }
+    try {
+      return await getToken();
+    } catch (e) {
+      lastError = e;
+      const msg = errText(e);
+      if (!isRetryableExpoPushTokenError(msg) || attempt === maxAttempts - 1) {
+        throw e;
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Shorter UI copy when native Firebase was never wired for this APK. */
 function pushFailureUserMessage(raw: string): string {
   if (
@@ -137,6 +183,14 @@ function pushFailureUserMessage(raw: string): string {
       "Firebase is not set up in this Android build (missing google-services.json processing). " +
       "Rebuild after: (1) npm run android:sync-firebase locally, or (2) EAS secret GOOGLE_SERVICES_JSON (File) + new APK. " +
       "See https://docs.expo.dev/push-notifications/fcm-credentials/"
+    );
+  }
+  if (raw.includes("SERVICE_NOT_AVAILABLE")) {
+    return (
+      "This phone could not get a push token from Google Play Services (often temporary). " +
+      "Update the Play Store app and \"Google Play services\" in the Play Store, clear cache for Play services, " +
+      "turn off VPN/private DNS briefly, use strong Wi‑Fi or mobile data, then reboot and tap Refresh again. " +
+      "Phones without Google Play (some imports/custom ROMs) cannot use FCM push."
     );
   }
   return `Could not register with the server: ${raw}`;
@@ -184,7 +238,10 @@ export async function registerExpoPushWithApi(
     notifInfo("register_expo_token", "calling getExpoPushTokenAsync", {
       context,
     });
-    const push = await Notifications.getExpoPushTokenAsync();
+    const push = await getExpoPushTokenWithRetries(
+      () => Notifications.getExpoPushTokenAsync(),
+      context,
+    );
     const expoPushToken = push.data;
     if (!expoPushToken) {
       const userMessage =

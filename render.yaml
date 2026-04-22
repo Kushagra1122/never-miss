@@ -40,3 +40,9 @@ services:
         value: nevermiss
       - key: POLL_INTERVAL_MS
         value: "120000"
+      # Generate a long random value in the dashboard, then schedule POST
+      # https://<your-service>.onrender.com/internal/sync-all
+      # with header Authorization: Bearer <CRON_SECRET> every 5 minutes (cron-job.org, etc.)
+      # so Gmail sync runs while user phones are idle. Render Free web dynos sleep without traffic.
+      - key: CRON_SECRET
+        sync: false
