@@ -36,10 +36,13 @@ import {
   shouldSkipExpoNotificationsModule,
   subscribeMailNotifications,
 } from "./src/notificationService";
+import {
+  registerGmailBackgroundSync,
+  unregisterGmailBackgroundSync,
+} from "./src/backgroundGmailSync";
+import { SESSION_TOKEN_KEY } from "./src/sessionKey";
 
 WebBrowser.maybeCompleteAuthSession();
-
-const TOKEN_KEY = "nevermiss_session";
 /** While Important is open, ask the server to sync Gmail then refetch captures */
 const FEED_SYNC_POLL_MS = 12_000;
 /** Other tabs: light refetch only (no Gmail pull) */
@@ -104,10 +107,20 @@ export default function App() {
   const refreshAllInFlight = useRef<Promise<void> | null>(null);
 
   const loadSession = useCallback(async () => {
-    const t = await SecureStore.getItemAsync(TOKEN_KEY);
+    const t = await SecureStore.getItemAsync(SESSION_TOKEN_KEY);
     setToken(t);
     setLoading(false);
   }, []);
+
+  /** Wake server Gmail sync periodically while signed in (esp. when API host sleeps, e.g. Render Free). */
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    if (!token) {
+      void unregisterGmailBackgroundSync().catch(() => {});
+      return;
+    }
+    void registerGmailBackgroundSync().catch(() => {});
+  }, [token]);
 
   const syncGmailFromServer = useCallback(async (sessionToken: string) => {
     try {
@@ -394,7 +407,7 @@ export default function App() {
         );
         return;
       }
-      await SecureStore.setItemAsync(TOKEN_KEY, t);
+      await SecureStore.setItemAsync(SESSION_TOKEN_KEY, t);
       setToken(t);
       setConnectEmailHint("");
       logOAuth("session_stored_ok", { tokenLength: t.length });
@@ -412,7 +425,7 @@ export default function App() {
   };
 
   const signOut = async () => {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await SecureStore.deleteItemAsync(SESSION_TOKEN_KEY);
     setToken(null);
     setMe(null);
     setRules([]);
@@ -689,6 +702,12 @@ export default function App() {
                   : ""}
               </Text>
             ) : null}
+            <Text style={styles.infoMuted}>
+              While signed in, the app schedules background Gmail sync so the server can notify
+              you when Never Miss is closed (timing depends on the OS, often 15+ minutes on
+              Android). If mail still only updates when you open the app, your API host may be
+              asleep between requests—use a scheduled ping to wake it (see project .env.example).
+            </Text>
           </View>
           <Pressable style={styles.secondaryBtn} onPress={openGmail}>
             <Text style={styles.secondaryBtnText}>Open Gmail</Text>

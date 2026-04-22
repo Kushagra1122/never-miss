@@ -86,6 +86,7 @@ module.exports = ({ config }) => ({
         color: "#38bdf8",
       },
     ],
+    "expo-background-task",
   ],
   extra: {
     apiUrl:
